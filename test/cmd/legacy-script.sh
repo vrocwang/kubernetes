@@ -33,6 +33,7 @@ source "${KUBE_ROOT}/test/cmd/authentication.sh"
 source "${KUBE_ROOT}/test/cmd/authorization.sh"
 source "${KUBE_ROOT}/test/cmd/batch.sh"
 source "${KUBE_ROOT}/test/cmd/certificate.sh"
+source "${KUBE_ROOT}/test/cmd/convert.sh"
 source "${KUBE_ROOT}/test/cmd/core.sh"
 source "${KUBE_ROOT}/test/cmd/crd.sh"
 source "${KUBE_ROOT}/test/cmd/create.sh"
@@ -88,6 +89,7 @@ nodes="nodes"
 persistentvolumeclaims="persistentvolumeclaims"
 persistentvolumes="persistentvolumes"
 pods="pods"
+podsecuritypolicies="podsecuritypolicies"
 podtemplates="podtemplates"
 replicasets="replicasets"
 replicationcontrollers="replicationcontrollers"
@@ -298,7 +300,7 @@ setup() {
   kube::util::ensure-gnu-sed
 
   kube::log::status "Building kubectl"
-  make -C "${KUBE_ROOT}" WHAT="cmd/kubectl"
+  make -C "${KUBE_ROOT}" WHAT="cmd/kubectl cmd/kubectl-convert"
 
   # Check kubectl
   kube::log::status "Running kubectl with no options"
@@ -559,6 +561,13 @@ runTests() {
   fi
   if kube::test::if_supports_resource "${deployments}"; then
     record_command run_kubectl_create_kustomization_directory_tests
+  fi
+
+  ######################
+  # Convert            #
+  ######################
+  if kube::test::if_supports_resource "${deployments}"; then
+    record_command run_convert_tests
   fi
 
   ######################
@@ -899,6 +908,15 @@ runTests() {
       record_command run_kubectl_all_namespace_tests
     fi
   fi
+
+  ############################
+  # Kubectl deprecated APIs  #
+  ############################
+
+  if kube::test::if_supports_resource "${podsecuritypolicies}" ; then
+    run_deprecated_api_tests
+  fi
+
 
   ######################
   # kubectl --template #

@@ -62,6 +62,7 @@ const (
 // CertConfig is a wrapper around certutil.Config extending it with PublicKeyAlgorithm.
 type CertConfig struct {
 	certutil.Config
+	NotAfter           *time.Time
 	PublicKeyAlgorithm x509.PublicKeyAlgorithm
 }
 
@@ -619,8 +620,10 @@ func EncodePublicKeyPEM(key crypto.PublicKey) ([]byte, error) {
 	return pem.EncodeToMemory(&block), nil
 }
 
-// NewPrivateKey creates an RSA private key
-func NewPrivateKey(keyType x509.PublicKeyAlgorithm) (crypto.Signer, error) {
+// NewPrivateKey returns a new private key.
+var NewPrivateKey = GeneratePrivateKey
+
+func GeneratePrivateKey(keyType x509.PublicKeyAlgorithm) (crypto.Signer, error) {
 	if keyType == x509.ECDSA {
 		return ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	}
@@ -645,6 +648,11 @@ func NewSignedCert(cfg *CertConfig, key crypto.Signer, caCert *x509.Certificate,
 
 	RemoveDuplicateAltNames(&cfg.AltNames)
 
+	notAfter := time.Now().Add(kubeadmconstants.CertificateValidity).UTC()
+	if cfg.NotAfter != nil {
+		notAfter = *cfg.NotAfter
+	}
+
 	certTmpl := x509.Certificate{
 		Subject: pkix.Name{
 			CommonName:   cfg.CommonName,
@@ -654,7 +662,7 @@ func NewSignedCert(cfg *CertConfig, key crypto.Signer, caCert *x509.Certificate,
 		IPAddresses:           cfg.AltNames.IPs,
 		SerialNumber:          serial,
 		NotBefore:             caCert.NotBefore,
-		NotAfter:              time.Now().Add(kubeadmconstants.CertificateValidity).UTC(),
+		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           cfg.Usages,
 		BasicConstraintsValid: true,

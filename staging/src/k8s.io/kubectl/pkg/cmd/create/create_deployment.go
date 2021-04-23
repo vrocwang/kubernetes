@@ -111,7 +111,7 @@ func NewCmdCreateDeployment(f cmdutil.Factory, ioStreams genericclioptions.IOStr
 
 	cmdutil.AddApplyAnnotationFlags(cmd)
 	cmdutil.AddValidateFlags(cmd)
-	cmdutil.AddGeneratorFlags(cmd, "")
+	cmdutil.AddDryRunFlag(cmd)
 	cmd.Flags().StringSliceVar(&o.Images, "image", o.Images, "Image names to run.")
 	cmd.MarkFlagRequired("image")
 	cmd.Flags().Int32Var(&o.Port, "port", o.Port, "The port that this container exposes.")
@@ -156,11 +156,7 @@ func (o *CreateDeploymentOptions) Complete(f cmdutil.Factory, cmd *cobra.Command
 	if err != nil {
 		return err
 	}
-	discoveryClient, err := f.ToDiscoveryClient()
-	if err != nil {
-		return err
-	}
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, discoveryClient)
+	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.DryRunStrategy)
 
 	printer, err := o.PrintFlags.ToPrinter()

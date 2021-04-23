@@ -43,20 +43,18 @@ import (
 	"k8s.io/apiserver/pkg/authentication/request/bearertoken"
 	apiserverserviceaccount "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	clientset "k8s.io/client-go/kubernetes"
 	v1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/keyutil"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/kubernetes/pkg/apis/core"
 	serviceaccountgetter "k8s.io/kubernetes/pkg/controller/serviceaccount"
-	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/serviceaccount"
 	"k8s.io/kubernetes/test/integration/framework"
 )
 
+// This key is for testing purposes only and is not considered secure.
 const ecdsaPrivateKey = `-----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIEZmTmUhuanLjPA2CLquXivuwBDHTt5XYwgIr/kA1LtRoAoGCCqGSM49
 AwEHoUQDQgAEH6cuzP8XuD5wal6wf9M6xDljTOPLX2i8uIp/C/ASqiIGUeeKQtX0
@@ -64,7 +62,6 @@ AwEHoUQDQgAEH6cuzP8XuD5wal6wf9M6xDljTOPLX2i8uIp/C/ASqiIGUeeKQtX0
 -----END EC PRIVATE KEY-----`
 
 func TestServiceAccountTokenCreate(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ServiceAccountIssuerDiscovery, true)()
 
 	// Build client config, clientset, and informers
 	sk, err := keyutil.ParsePrivateKeyPEM([]byte(ecdsaPrivateKey))
@@ -91,7 +88,7 @@ func TestServiceAccountTokenCreate(t *testing.T) {
 	masterConfig.GenericConfig.Authentication.APIAudiences = aud
 	masterConfig.GenericConfig.Authentication.Authenticator = bearertoken.New(
 		serviceaccount.JWTTokenAuthenticator(
-			iss,
+			[]string{iss},
 			[]interface{}{&pk},
 			aud,
 			serviceaccount.NewValidator(serviceaccountgetter.NewGetterFromClient(

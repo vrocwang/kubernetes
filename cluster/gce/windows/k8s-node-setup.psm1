@@ -57,8 +57,8 @@ $GCE_METADATA_SERVER = "169.254.169.254"
 # exist until an initial HNS network has been created on the Windows node - see
 # Add_InitialHnsNetwork().
 $MGMT_ADAPTER_NAME = "vEthernet (Ethernet*"
-$CRICTL_VERSION = 'v1.20.0'
-$CRICTL_SHA256 = 'cc909108ee84d39b2e9d7ac0cb9599b6fa7fc51f5a7da7014052684cd3e3f65e'
+$CRICTL_VERSION = 'v1.21.0'
+$CRICTL_SHA256 = '437d5301f6f5b9848ef057cee98474ce11a6679c91b4d4e83677a8c1f2415143'
 
 Import-Module -Force C:\common.psm1
 
@@ -159,6 +159,20 @@ function Dump-DebugInfoToConsole {
     Log-Output "Installed hotfixes:`n$hotfixes"
     Log-Output "GCE Windows image:`n$image"
   } Catch { }
+}
+
+# Configures Window Defender preferences
+function Configure-WindowsDefender {
+  if ((Get-WindowsFeature -Name 'Windows-Defender').Installed) {
+    Log-Output "Configuring Windows Defender preferences"
+    Set-MpPreference -SubmitSamplesConsent NeverSend
+    Log-Output "Disabling Windows Defender sample submission"
+    Set-MpPreference -MAPSReporting Disabled
+    Log-Output "Disabling Windows Defender Microsoft Active Protection Service Reporting"
+
+    Log-Output "Defender Preferences"
+    Get-MpPreference
+  }
 }
 
 # Converts the kube-env string in Yaml
@@ -303,10 +317,13 @@ function Set-PrerequisiteOptions {
   Log-Output "Disabling Windows Update service"
   & sc.exe config wuauserv start=disabled
   & sc.exe stop wuauserv
+  Write-VerboseServiceInfoToConsole -Service 'wuauserv' -Delay 1
 
   # Use TLS 1.2: needed for Invoke-WebRequest downloads from github.com.
   [Net.ServicePointManager]::SecurityProtocol = `
       [Net.SecurityProtocolType]::Tls12
+
+  Configure-WindowsDefender
 }
 
 # Creates directories where other functions in this module will read and write
@@ -427,6 +444,7 @@ function Start-CSIProxy {
     & sc.exe failure csiproxy reset= 0 actions= restart/10000
     Log-Output "Starting CSI Proxy Service"
     & sc.exe start csiproxy
+    Write-VerboseServiceInfoToConsole -Service 'csiproxy' -Delay 1
   }
 }
 
@@ -1216,6 +1234,7 @@ function Start-WorkerServices {
 
   Log-Output "Waiting 10 seconds for kubelet to stabilize"
   Start-Sleep 10
+  Write-VerboseServiceInfoToConsole -Service 'kubelet'
 
   if (Get-Process | Where-Object Name -eq "kube-proxy") {
     Log-Output -Fatal `
@@ -1226,6 +1245,7 @@ function Start-WorkerServices {
   & sc.exe failure kube-proxy reset= 0 actions= restart/10000
   Log-Output "Starting kube-proxy service"
   & sc.exe start kube-proxy
+  Write-VerboseServiceInfoToConsole -Service 'kube-proxy' -Delay 1
 
   # F1020 23:08:52.000083    9136 server.go:361] unable to load in-cluster
   # configuration, KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be
@@ -1521,21 +1541,16 @@ function Install_Containerd {
     return
   }
 
-  # TODO(random-liu): Change this to official release path after testing.
-  $CONTAINERD_GCS_BUCKET = "cri-containerd-staging/windows"
-
   $tmp_dir = 'C:\containerd_tmp'
   New-Item $tmp_dir -ItemType 'directory' -Force | Out-Null
 
-  $version_url = "https://storage.googleapis.com/$CONTAINERD_GCS_BUCKET/latest"
-  MustDownload-File -URLs $version_url -OutFile $tmp_dir\version
-  $version = $(Get-Content $tmp_dir\version)
-
-  $tar_url = ("https://storage.googleapis.com/$CONTAINERD_GCS_BUCKET/" +
-              "cri-containerd-cni-$version.windows-amd64.tar.gz")
-  $sha_url = $tar_url + ".sha256"
-  MustDownload-File -URLs $sha_url -OutFile $tmp_dir\sha256
-  $sha = $(Get-Content $tmp_dir\sha256)
+  # TODO(ibrahimab) Change this to a gcs bucket with CI maintained and accessible by community.
+  $version = '1.4.4'
+  $tar_url = ("https://github.com/containerd/containerd/releases/download/v${version}/" +
+              "cri-containerd-cni-${version}-windows-amd64.tar.gz")
+  $sha_url = $tar_url + ".sha256sum"
+  MustDownload-File -URLs $sha_url -OutFile $tmp_dir\sha256sum
+  $sha = $(Get-Content $tmp_dir\sha256sum).Split(" ")[0].ToUpper()
 
   MustDownload-File `
       -URLs $tar_url `
@@ -1544,32 +1559,60 @@ function Install_Containerd {
       -Algorithm SHA256
 
   tar xzvf $tmp_dir\containerd.tar.gz -C $tmp_dir
-  Move-Item -Force $tmp_dir\cni\*.exe ${env:CNI_DIR}\
-  Move-Item -Force $tmp_dir\*.exe ${env:NODE_DIR}\
+  Move-Item -Force $tmp_dir\cni\*.exe "${env:CNI_DIR}\"
+  Move-Item -Force $tmp_dir\*.exe "${env:NODE_DIR}\"
   Remove-Item -Force -Recurse $tmp_dir
+
+  # Exclusion for Defender.
+  Add-MpPreference -ExclusionProcess "${env:NODE_DIR}\containerd.exe"
+}
+
+# Lookup the path of containerd config if exists, else returns a default.
+function Get_Containerd_ConfigPath {
+  $service = Get-WMIObject -Class Win32_Service -Filter  "Name='containerd'"
+  if (!($service -eq $null) -and
+      $service.PathName -match ".*\s--config\s*(\S+).*" -and
+      $matches.Count -eq 2) {
+    return $matches[1]
+  } else {
+    return 'C:\Program Files\containerd\config.toml'
+  }
 }
 
 # Generates the containerd config.toml file.
 function Configure_Containerd {
-  $config_dir = 'C:\Program Files\containerd'
+  $config_path = Get_Containerd_ConfigPath
+  $config_dir = [System.IO.Path]::GetDirectoryName($config_path)
   New-Item $config_dir -ItemType 'directory' -Force | Out-Null
-  Set-Content "$config_dir\config.toml" @"
+  Set-Content ${config_path} @"
+[plugins.scheduler]
+  schedule_delay = '0s'
+  startup_delay = '0s'
 [plugins.cri]
   sandbox_image = 'INFRA_CONTAINER_IMAGE'
+[plugins.cri.containerd]
+  snapshotter = 'windows'
+  default_runtime_name = 'runhcs-wcow-process'
+  disable_snapshot_annotations = true
+  discard_unpacked_layers = true
 [plugins.cri.cni]
   bin_dir = 'CNI_BIN_DIR'
   conf_dir = 'CNI_CONF_DIR'
 "@.replace('INFRA_CONTAINER_IMAGE', ${env:INFRA_CONTAINER}).`
-    replace('CNI_BIN_DIR', ${env:CNI_DIR}).`
-    replace('CNI_CONF_DIR', ${env:CNI_CONFIG_DIR})
+    replace('CNI_BIN_DIR', "${env:CNI_DIR}").`
+    replace('CNI_CONF_DIR', "${env:CNI_CONFIG_DIR}")
 }
 
-# Register and start containerd service.
+# Register if needed and start containerd service.
 function Start_Containerd {
-  Log-Output "Creating containerd service"
-  & containerd.exe --register-service --log-file ${env:LOGS_DIR}/containerd.log
+  # Do the registration only if the containerd service does not exist.
+  if ((Get-WMIObject -Class Win32_Service -Filter  "Name='containerd'") -eq $null) {
+    Log-Output "Creating containerd service"
+    & containerd.exe --register-service --log-file "${env:LOGS_DIR}/containerd.log"
+  }
+
   Log-Output "Starting containerd service"
-  Start-Service containerd
+  Restart-Service containerd
 }
 
 # Pigz Resources
@@ -1598,6 +1641,8 @@ function Install-Pigz {
       # Windows path it'll use it instead of the default unzipper.
       # See: https://github.com/containerd/containerd/issues/1896
       Add-MachineEnvironmentPath -Path $PIGZ_ROOT
+      # Add process exclusion for Windows Defender to boost performance. 
+      Add-MpPreference -ExclusionProcess "$PIGZ_ROOT\unpigz.exe"
       Log-Output "Installed Pigz $PIGZ_VERSION"
     } else {
       Log-Output "Pigz already installed."
@@ -1738,15 +1783,15 @@ function DownloadAndInstall-LoggingAgents {
 function Create-LoggingAgentServices {
   cd $LOGGINGAGENT_ROOT
 
-  Log-Output 'Creating service: ${LOGGINGAGENT_SERVICE}'
+  Log-Output "Creating service: ${LOGGINGAGENT_SERVICE}"
   sc.exe create $LOGGINGAGENT_SERVICE binpath= "${LOGGINGAGENT_ROOT}\bin\fluent-bit.exe -c \fluent-bit\conf\fluent-bit.conf"
   sc.exe failure $LOGGINGAGENT_SERVICE reset= 30 actions= restart/5000
-  sc.exe query $LOGGINGAGENT_SERVICE
+  Write-VerboseServiceInfoToConsole -Service $LOGGINGAGENT_SERVICE
 
-  Log-Output 'Creating service: ${LOGGINGEXPORTER_SERVICE}'
+  Log-Output "Creating service: ${LOGGINGEXPORTER_SERVICE}"
   sc.exe create  $LOGGINGEXPORTER_SERVICE  binpath= "${LOGGINGEXPORTER_ROOT}\flb-exporter.exe --kubernetes-separator=_ --stackdriver-resource-model=k8s --enable-pod-label-discovery --logtostderr --winsvc  --pod-label-dot-replacement=_"
   sc.exe failure $LOGGINGEXPORTER_SERVICE reset= 30 actions= restart/5000
-  sc.exe query $LOGGINGEXPORTER_SERVICE
+  Write-VerboseServiceInfoToConsole -Service $LOGGINGEXPORTER_SERVICE
 }
 
 # Writes the logging configuration file for Logging agent. Restart-LoggingAgent
@@ -2118,6 +2163,7 @@ function Configure-StackdriverAgent {
   # seconds. The logging agent may die die to various disruptions but can be
   # resumed.
   sc.exe failure StackdriverLogging reset= 0 actions= restart/1000/restart/10000
+  Write-VerboseServiceInfoToConsole -Service 'StackdriverLogging'
 }
 
 # The NODE_NAME placeholder must be replaced with the node's name (hostname).

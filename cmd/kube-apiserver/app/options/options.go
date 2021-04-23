@@ -71,6 +71,8 @@ type ServerRunOptions struct {
 	// of parsing ServiceClusterIPRange into actual values
 	PrimaryServiceClusterIPRange   net.IPNet
 	SecondaryServiceClusterIPRange net.IPNet
+	// APIServerServiceIP is the first valid IP from PrimaryServiceClusterIPRange
+	APIServerServiceIP net.IP
 
 	ServiceNodePortRange utilnet.PortRange
 	SSHKeyfile           string
@@ -227,20 +229,15 @@ func (s *ServerRunOptions) Flags() (fss cliflag.NamedFlagSets) {
 		"of type NodePort, using this as the value of the port. If zero, the Kubernetes master "+
 		"service will be of type ClusterIP.")
 
-	// TODO (khenidak) change documentation as we move IPv6DualStack feature from ALPHA to BETA
 	fs.StringVar(&s.ServiceClusterIPRanges, "service-cluster-ip-range", s.ServiceClusterIPRanges, ""+
 		"A CIDR notation IP range from which to assign service cluster IPs. This must not "+
-		"overlap with any IP ranges assigned to nodes or pods.")
+		"overlap with any IP ranges assigned to nodes or pods. Max of two dual-stack CIDRs is allowed.")
 
 	fs.Var(&s.ServiceNodePortRange, "service-node-port-range", ""+
 		"A port range to reserve for services with NodePort visibility. "+
 		"Example: '30000-32767'. Inclusive at both ends of the range.")
 
 	// Kubelet related flags:
-	kubeletHTTPS := true
-	fs.BoolVar(&kubeletHTTPS, "kubelet-https", kubeletHTTPS, "Use https for kubelet connections.")
-	fs.MarkDeprecated("kubelet-https", "API Server connections to kubelets always use https. This flag will be removed in 1.22.")
-
 	fs.StringSliceVar(&s.KubeletConfig.PreferredAddressTypes, "kubelet-preferred-address-types", s.KubeletConfig.PreferredAddressTypes,
 		"List of the preferred NodeAddressTypes to use for kubelet connections.")
 

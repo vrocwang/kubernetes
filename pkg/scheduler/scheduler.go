@@ -28,13 +28,16 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
+	"k8s.io/kubernetes/pkg/apis/core/validation"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	"k8s.io/kubernetes/pkg/scheduler/core"
@@ -88,6 +91,7 @@ type Scheduler struct {
 }
 
 type schedulerOptions struct {
+	kubeConfig               *restclient.Config
 	schedulerAlgorithmSource schedulerapi.SchedulerAlgorithmSource
 	percentageOfNodesToScore int32
 	podInitialBackoffSeconds int64
@@ -97,10 +101,18 @@ type schedulerOptions struct {
 	profiles                   []schedulerapi.KubeSchedulerProfile
 	extenders                  []schedulerapi.Extender
 	frameworkCapturer          FrameworkCapturer
+	parallelism                int32
 }
 
 // Option configures a Scheduler
 type Option func(*schedulerOptions)
+
+// WithKubeConfig sets the kube config for Scheduler.
+func WithKubeConfig(cfg *restclient.Config) Option {
+	return func(o *schedulerOptions) {
+		o.kubeConfig = cfg
+	}
+}
 
 // WithProfiles sets profiles for Scheduler. By default, there is one profile
 // with the name "default-scheduler".
@@ -111,10 +123,9 @@ func WithProfiles(p ...schedulerapi.KubeSchedulerProfile) Option {
 }
 
 // WithParallelism sets the parallelism for all scheduler algorithms. Default is 16.
-// TODO(#95952): Remove global setter in favor of a struct that holds the configuration.
 func WithParallelism(threads int32) Option {
 	return func(o *schedulerOptions) {
-		parallelize.SetParallelism(int(threads))
+		o.parallelism = threads
 	}
 }
 
@@ -182,6 +193,7 @@ var defaultSchedulerOptions = schedulerOptions{
 	percentageOfNodesToScore: schedulerapi.DefaultPercentageOfNodesToScore,
 	podInitialBackoffSeconds: int64(internalqueue.DefaultPodInitialBackoffDuration.Seconds()),
 	podMaxBackoffSeconds:     int64(internalqueue.DefaultPodMaxBackoffDuration.Seconds()),
+	parallelism:              int32(parallelize.DefaultParallelism),
 }
 
 // New returns a Scheduler
@@ -212,6 +224,7 @@ func New(client clientset.Interface,
 
 	configurator := &Configurator{
 		client:                   client,
+		kubeConfig:               options.kubeConfig,
 		recorderFactory:          recorderFactory,
 		informerFactory:          informerFactory,
 		schedulerCache:           schedulerCache,
@@ -224,6 +237,7 @@ func New(client clientset.Interface,
 		nodeInfoSnapshot:         snapshot,
 		extenders:                options.extenders,
 		frameworkCapturer:        options.frameworkCapturer,
+		parallellism:             options.parallelism,
 	}
 
 	metrics.Register()
@@ -324,11 +338,12 @@ func (sched *Scheduler) recordSchedulingFailure(fwk framework.Framework, podInfo
 	// and the time the scheduler receives a Pod Update for the nominated pod.
 	// Here we check for nil only for tests.
 	if sched.SchedulingQueue != nil {
-		sched.SchedulingQueue.AddNominatedPod(podInfo.Pod, nominatedNode)
+		sched.SchedulingQueue.AddNominatedPod(podInfo.PodInfo, nominatedNode)
 	}
 
 	pod := podInfo.Pod
-	fwk.EventRecorder().Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", err.Error())
+	msg := truncateMessage(err.Error())
+	fwk.EventRecorder().Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", msg)
 	if err := updatePod(sched.client, pod, &v1.PodCondition{
 		Type:    v1.PodScheduled,
 		Status:  v1.ConditionFalse,
@@ -337,6 +352,16 @@ func (sched *Scheduler) recordSchedulingFailure(fwk framework.Framework, podInfo
 	}, nominatedNode); err != nil {
 		klog.ErrorS(err, "Error updating pod", "pod", klog.KObj(pod))
 	}
+}
+
+// truncateMessage truncates a message if it hits the NoteLengthLimit.
+func truncateMessage(message string) string {
+	max := validation.NoteLengthLimit
+	if len(message) <= max {
+		return message
+	}
+	suffix := " ..."
+	return message[:max-len(suffix)] + suffix
 }
 
 func updatePod(client clientset.Interface, pod *v1.Pod, condition *v1.PodCondition, nominatedNode string) error {
@@ -462,7 +487,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 				klog.V(3).InfoS("No PostFilter plugins are registered, so no preemption will be performed")
 			} else {
 				// Run PostFilter plugins to try to make the pod schedulable in a future scheduling cycle.
-				result, status := fwk.RunPostFilterPlugins(ctx, state, pod, fitError.FilteredNodesStatuses)
+				result, status := fwk.RunPostFilterPlugins(ctx, state, pod, fitError.Diagnosis.NodeToStatusMap)
 				if status.Code() == framework.Error {
 					klog.ErrorS(nil, "Status after running PostFilter plugins for pod", klog.KObj(pod), "status", status)
 				} else {
@@ -625,14 +650,15 @@ func (sched *Scheduler) skipPodSchedule(fwk framework.Framework, pod *v1.Pod) bo
 		return true
 	}
 
-	// Case 2: pod has been assumed and pod updates could be skipped.
+	// Case 2: pod has been assumed could be skipped.
 	// An assumed pod can be added again to the scheduling queue if it got an update event
 	// during its previous scheduling cycle but before getting assumed.
-	if sched.skipPodUpdate(pod) {
-		return true
+	isAssumed, err := sched.SchedulerCache.IsAssumedPod(pod)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("failed to check whether pod %s/%s is assumed: %v", pod.Namespace, pod.Name, err))
+		return false
 	}
-
-	return false
+	return isAssumed
 }
 
 func defaultAlgorithmSourceProviderName() *string {

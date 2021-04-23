@@ -137,28 +137,13 @@ func TestCmdInitConfig(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "can't load old v1alpha1 config",
-			args:     "--config=testdata/init/v1alpha1.yaml",
-			expected: false,
-		},
-		{
-			name:     "can't load old v1alpha2 config",
-			args:     "--config=testdata/init/v1alpha2.yaml",
-			expected: false,
-		},
-		{
-			name:     "can't load old v1alpha3 config",
-			args:     "--config=testdata/init/v1alpha3.yaml",
-			expected: false,
-		},
-		{
-			name:     "can load v1beta1 config",
+			name:     "can't load v1beta1 config",
 			args:     "--config=testdata/init/v1beta1.yaml",
-			expected: true,
+			expected: false,
 		},
 		{
-			name:     "don't allow mixed arguments v1beta1",
-			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1beta1.yaml",
+			name:     "don't allow mixed arguments v1beta2",
+			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1beta2.yaml",
 			expected: false,
 		},
 		{
@@ -167,8 +152,13 @@ func TestCmdInitConfig(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "don't allow mixed arguments v1beta2",
-			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1beta2.yaml",
+			name:     "can load v1beta3 config",
+			args:     "--config=testdata/init/v1beta3.yaml",
+			expected: true,
+		},
+		{
+			name:     "don't allow mixed arguments v1beta3",
+			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1beta3.yaml",
 			expected: false,
 		},
 		{
@@ -329,8 +319,8 @@ func TestCmdInitFeatureGates(t *testing.T) {
 			args: "",
 		},
 		{
-			name: "feature gate IPv6DualStack=true",
-			args: "--feature-gates=IPv6DualStack=true",
+			name: "feature gate IPv6DualStack=false",
+			args: "--feature-gates=IPv6DualStack=false",
 		},
 		{
 			name: "feature gate PublicKeysECDSA=true",

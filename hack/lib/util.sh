@@ -219,16 +219,6 @@ kube::util::find-binary-for-platform() {
     );
   fi
 
-  # Also search for binary in bazel build tree if bazel-out/ exists.
-  if [[ -d "${KUBE_ROOT}/bazel-out" ]]; then
-    while IFS=$'\n' read -r bin_build_mode; do
-      if grep -q "${platform}" "${bin_build_mode}"; then
-        # drop the extension to get the real binary path.
-        locations+=("${bin_build_mode%.*}")
-      fi
-    done < <(find "${KUBE_ROOT}/bazel-out/" -name "${lookfor}.go_build_mode")
-  fi
-
   # List most recently-updated location.
   local -r bin=$( (ls -t "${locations[@]}" 2>/dev/null || true) | head -1 )
 
@@ -734,8 +724,11 @@ function kube::util::ensure_dockerized {
 #
 function kube::util::ensure-bash-version {
   # shellcheck disable=SC2004
-  if ((${BASH_VERSINFO[0]}<5)); then
-    echo "ERROR: This script requires a minimum bash version of 5.0"
+  if ((${BASH_VERSINFO[0]}<4)) || ( ((${BASH_VERSINFO[0]}==4)) && ((${BASH_VERSINFO[1]}<2)) ); then
+    echo "ERROR: This script requires a minimum bash version of 4.2, but got version of ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"
+    if [ "$(uname)" = 'Darwin' ]; then
+      echo "On macOS with homebrew 'brew install bash' is sufficient."
+    fi
     exit 1
   fi
 }

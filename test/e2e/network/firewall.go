@@ -37,6 +37,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework/providers/gce"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
+	"k8s.io/kubernetes/test/e2e/network/common"
 	gcecloud "k8s.io/legacy-cloud-providers/gce"
 
 	"github.com/onsi/ginkgo"
@@ -49,7 +50,7 @@ const (
 	firewallTestUDPPort  = int32(29998)
 )
 
-var _ = SIGDescribe("Firewall rule", func() {
+var _ = common.SIGDescribe("Firewall rule", func() {
 	var firewallTestName = "firewall-test"
 	f := framework.NewDefaultFramework(firewallTestName)
 
@@ -152,7 +153,8 @@ var _ = SIGDescribe("Firewall rule", func() {
 				fmt.Sprintf("--http-port=%d", firewallTestHTTPPort),
 				fmt.Sprintf("--udp-port=%d", firewallTestUDPPort))
 			pod.ObjectMeta.Labels = jig.Labels
-			pod.Spec.NodeName = nodeName
+			nodeSelection := e2epod.NodeSelection{Name: nodeName}
+			e2epod.SetNodeSelection(&pod.Spec, nodeSelection)
 			pod.Spec.HostNetwork = true
 			_, err := cs.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
 			framework.ExpectNoError(err)

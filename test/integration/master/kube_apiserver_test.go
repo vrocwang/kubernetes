@@ -28,7 +28,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-openapi/spec"
+	"k8s.io/apiextensions-apiserver/test/integration/fixtures"
+
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -40,6 +42,7 @@ import (
 	"k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/kube-aggregator/pkg/apis/apiregistration"
+	"k8s.io/kube-openapi/pkg/validation/spec"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/test/integration/etcd"
 	"k8s.io/kubernetes/test/integration/framework"
@@ -195,7 +198,7 @@ func TestOpenAPIApiextensionsOverlapProtection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	crdPath, exist, err := getOpenAPIPath(apiextensionsclient, `/apis/apiextensions.k8s.io/v1beta1/customresourcedefinitions/{name}`)
+	crdPath, exist, err := getOpenAPIPath(apiextensionsclient, `/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{name}`)
 	if err != nil {
 		t.Fatalf("unexpected error getting CRD OpenAPI path: %v", err)
 	}
@@ -204,26 +207,32 @@ func TestOpenAPIApiextensionsOverlapProtection(t *testing.T) {
 	}
 
 	// Create a CRD that overlaps OpenAPI path with the CRD API
-	crd := &apiextensionsv1beta1.CustomResourceDefinition{
+	crd := &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "customresourcedefinitions.apiextensions.k8s.io",
 			Annotations: map[string]string{"api-approved.kubernetes.io": "unapproved, test-only"},
 		},
-		Spec: apiextensionsv1beta1.CustomResourceDefinitionSpec{
-			Group:   "apiextensions.k8s.io",
-			Version: "v1beta1",
-			Scope:   apiextensionsv1beta1.ClusterScoped,
-			Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "apiextensions.k8s.io",
+			Scope: apiextensionsv1.ClusterScoped,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
 				Plural:   "customresourcedefinitions",
 				Singular: "customresourcedefinition",
 				Kind:     "CustomResourceDefinition",
 				ListKind: "CustomResourceDefinitionList",
 			},
-			Validation: &apiextensionsv1beta1.CustomResourceValidation{
-				OpenAPIV3Schema: &apiextensionsv1beta1.JSONSchemaProps{
-					Type: "object",
-					Properties: map[string]apiextensionsv1beta1.JSONSchemaProps{
-						testApiextensionsOverlapProbeString: {Type: "boolean"},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{
+					Name:    "v1",
+					Served:  true,
+					Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{
+						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+							Type: "object",
+							Properties: map[string]apiextensionsv1.JSONSchemaProps{
+								testApiextensionsOverlapProbeString: {Type: "boolean"},
+							},
+						},
 					},
 				},
 			},
@@ -237,7 +246,7 @@ func TestOpenAPIApiextensionsOverlapProtection(t *testing.T) {
 	}
 
 	// Expect the CRD path to not change
-	path, _, err := getOpenAPIPath(apiextensionsclient, `/apis/apiextensions.k8s.io/v1beta1/customresourcedefinitions/{name}`)
+	path, _, err := getOpenAPIPath(apiextensionsclient, `/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{name}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -263,26 +272,32 @@ func TestOpenAPIApiextensionsOverlapProtection(t *testing.T) {
 	}
 
 	// Create a CRD that overlaps OpenAPI definition with the CRD API
-	crd = &apiextensionsv1beta1.CustomResourceDefinition{
+	crd = &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "customresourcedefinitions.apiextensions.apis.pkg.apiextensions-apiserver.k8s.io",
 			Annotations: map[string]string{"api-approved.kubernetes.io": "unapproved, test-only"},
 		},
-		Spec: apiextensionsv1beta1.CustomResourceDefinitionSpec{
-			Group:   "apiextensions.apis.pkg.apiextensions-apiserver.k8s.io",
-			Version: "v1beta1",
-			Scope:   apiextensionsv1beta1.ClusterScoped,
-			Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "apiextensions.apis.pkg.apiextensions-apiserver.k8s.io",
+			Scope: apiextensionsv1.ClusterScoped,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
 				Plural:   "customresourcedefinitions",
 				Singular: "customresourcedefinition",
 				Kind:     "CustomResourceDefinition",
 				ListKind: "CustomResourceDefinitionList",
 			},
-			Validation: &apiextensionsv1beta1.CustomResourceValidation{
-				OpenAPIV3Schema: &apiextensionsv1beta1.JSONSchemaProps{
-					Type: "object",
-					Properties: map[string]apiextensionsv1beta1.JSONSchemaProps{
-						testApiextensionsOverlapProbeString: {Type: "boolean"},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{
+					Name:    "v1",
+					Served:  true,
+					Storage: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{
+						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+							Type: "object",
+							Properties: map[string]apiextensionsv1.JSONSchemaProps{
+								testApiextensionsOverlapProbeString: {Type: "boolean"},
+							},
+						},
 					},
 				},
 			},
@@ -296,7 +311,7 @@ func TestOpenAPIApiextensionsOverlapProtection(t *testing.T) {
 	}
 
 	// Expect the apiextensions definition to not change, since the overlapping definition will get renamed.
-	apiextensionsDefinition, exist, err := getOpenAPIDefinition(apiextensionsclient, `io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.CustomResourceDefinition`)
+	apiextensionsDefinition, exist, err := getOpenAPIDefinition(apiextensionsclient, `io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,17 +334,24 @@ func triggerSpecUpdateWithProbeCRD(t *testing.T, apiextensionsclient *apiextensi
 	name := fmt.Sprintf("integration-test-%s-crd", suffix)
 	kind := fmt.Sprintf("Integration-test-%s-crd", suffix)
 	group := "probe.test.com"
-	crd := &apiextensionsv1beta1.CustomResourceDefinition{
+	crd := &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "s." + group},
-		Spec: apiextensionsv1beta1.CustomResourceDefinitionSpec{
-			Group:   group,
-			Version: "v1",
-			Scope:   apiextensionsv1beta1.ClusterScoped,
-			Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: group,
+			Scope: apiextensionsv1.ClusterScoped,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
 				Plural:   name + "s",
 				Singular: name,
 				Kind:     kind,
 				ListKind: kind + "List",
+			},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{
+					Name:    "v1",
+					Served:  true,
+					Storage: true,
+					Schema:  fixtures.AllowAllSchema(),
+				},
 			},
 		},
 	}

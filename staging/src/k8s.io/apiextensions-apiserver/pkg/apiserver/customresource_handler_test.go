@@ -28,11 +28,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-openapi/spec"
 	"sigs.k8s.io/yaml"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -59,6 +57,7 @@ import (
 	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
 	"k8s.io/apiserver/pkg/util/webhook"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/kube-openapi/pkg/validation/spec"
 )
 
 func TestConvertFieldLabel(t *testing.T) {
@@ -825,18 +824,20 @@ func TestBuildOpenAPIModelsForApply(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
+	for i, test := range tests {
 		crd.Spec.Versions[0].Schema = &test
-		if _, err := buildOpenAPIModelsForApply(staticSpec, &crd); err != nil {
+		models, err := buildOpenAPIModelsForApply(staticSpec, &crd)
+		if err != nil {
 			t.Fatalf("failed to convert to apply model: %v", err)
+		}
+		if models == nil {
+			t.Fatalf("%d: failed to convert to apply model: nil", i)
 		}
 	}
 }
 
 func getOpenAPISpecFromFile() (*spec.Swagger, error) {
-	path := filepath.Join(
-		strings.Repeat(".."+string(filepath.Separator), 6),
-		"api", "openapi-spec", "swagger.json")
+	path := filepath.Join("testdata", "swagger.json")
 	_, err := os.Stat(path)
 	if err != nil {
 		return nil, err

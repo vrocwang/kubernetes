@@ -29,7 +29,6 @@ import (
 	"time"
 
 	jsonpatch "github.com/evanphx/json-patch"
-	"github.com/go-openapi/spec"
 	"github.com/google/uuid"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -70,6 +69,7 @@ import (
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
+	"k8s.io/kube-openapi/pkg/validation/spec"
 	utilsnet "k8s.io/utils/net"
 
 	// install apis
@@ -165,6 +165,8 @@ type Config struct {
 	Serializer runtime.NegotiatedSerializer
 	// OpenAPIConfig will be used in generating OpenAPI spec. This is nil by default. Use DefaultOpenAPIConfig for "working" defaults.
 	OpenAPIConfig *openapicommon.Config
+	// SkipOpenAPIInstallation avoids installing the OpenAPI handler if set to true.
+	SkipOpenAPIInstallation bool
 
 	// RESTOptionsGetter is used to construct RESTStorage types via the generic registry.
 	RESTOptionsGetter genericregistry.RESTOptionsGetter
@@ -571,7 +573,8 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 
 		listedPathProvider: apiServerHandler,
 
-		openAPIConfig: c.OpenAPIConfig,
+		openAPIConfig:           c.OpenAPIConfig,
+		skipOpenAPIInstallation: c.SkipOpenAPIInstallation,
 
 		postStartHooks:         map[string]postStartHookEntry{},
 		preShutdownHooks:       map[string]preShutdownHookEntry{},
@@ -633,7 +636,7 @@ func (c completedConfig) New(name string, delegationTarget DelegationTarget) (*G
 			}
 		}
 		// TODO: Once we get rid of /healthz consider changing this to post-start-hook.
-		err := s.addReadyzChecks(healthz.NewInformerSyncHealthz(c.SharedInformerFactory))
+		err := s.AddReadyzChecks(healthz.NewInformerSyncHealthz(c.SharedInformerFactory))
 		if err != nil {
 			return nil, err
 		}
@@ -746,7 +749,13 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	handler = filterlatency.TrackStarted(handler, "authentication")
 
 	handler = genericfilters.WithCORS(handler, c.CorsAllowedOriginList, nil, nil, nil, "true")
-	handler = genericfilters.WithTimeoutForNonLongRunningRequests(handler, c.LongRunningFunc, c.RequestTimeout)
+
+	// WithTimeoutForNonLongRunningRequests will call the rest of the request handling in a go-routine with the
+	// context with deadline. The go-routine can keep running, while the timeout logic will return a timeout to the client.
+	handler = genericfilters.WithTimeoutForNonLongRunningRequests(handler, c.LongRunningFunc)
+
+	handler = genericapifilters.WithRequestDeadline(handler, c.AuditBackend, c.AuditPolicyChecker,
+		c.LongRunningFunc, c.Serializer, c.RequestTimeout)
 	handler = genericfilters.WithWaitGroup(handler, c.LongRunningFunc, c.HandlerChainWaitGroup)
 	handler = genericapifilters.WithRequestInfo(handler, c.RequestInfoResolver)
 	if c.SecureServing != nil && !c.SecureServing.DisableHTTP2 && c.GoawayChance > 0 {
@@ -756,8 +765,10 @@ func DefaultBuildHandlerChain(apiHandler http.Handler, c *Config) http.Handler {
 	handler = genericapifilters.WithWarningRecorder(handler)
 	handler = genericapifilters.WithCacheControl(handler)
 	handler = genericfilters.WithHSTS(handler, c.HSTSDirectives)
+	handler = genericfilters.WithHTTPLogging(handler)
 	handler = genericapifilters.WithRequestReceivedTimestamp(handler)
 	handler = genericfilters.WithPanicRecovery(handler, c.RequestInfoResolver)
+	handler = genericapifilters.WithAuditID(handler)
 	return handler
 }
 
@@ -847,7 +858,7 @@ func AuthorizeClientBearerToken(loopback *restclient.Config, authn *Authenticati
 		Groups: []string{user.SystemPrivilegedGroup},
 	}
 
-	tokenAuthenticator := authenticatorfactory.NewFromTokens(tokens)
+	tokenAuthenticator := authenticatorfactory.NewFromTokens(tokens, authn.APIAudiences)
 	authn.Authenticator = authenticatorunion.New(tokenAuthenticator, authn.Authenticator)
 
 	tokenAuthorizer := authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup)

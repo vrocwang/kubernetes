@@ -30,14 +30,16 @@ import (
 	"time"
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
 
 	"k8s.io/client-go/tools/cache"
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	discoveryv1beta1 "k8s.io/api/discovery/v1beta1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -45,6 +47,7 @@ import (
 	watch "k8s.io/apimachinery/pkg/watch"
 	clientset "k8s.io/client-go/kubernetes"
 	watchtools "k8s.io/client-go/tools/watch"
+	"k8s.io/client-go/util/retry"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2edeployment "k8s.io/kubernetes/test/e2e/framework/deployment"
@@ -56,6 +59,7 @@ import (
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
+	"k8s.io/kubernetes/test/e2e/network/common"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -83,6 +87,8 @@ const (
 	clusterAddonLabelKey   = "k8s-app"
 	kubeAPIServerLabelName = "kube-apiserver"
 	clusterComponentKey    = "component"
+
+	svcReadyTimeout = 1 * time.Minute
 )
 
 var (
@@ -731,7 +737,7 @@ func getEndpointNodesWithInternalIP(jig *e2eservice.TestJig) (map[string]string,
 	return endpointsNodeMap, nil
 }
 
-var _ = SIGDescribe("Services", func() {
+var _ = common.SIGDescribe("Services", func() {
 	f := framework.NewDefaultFramework("services")
 
 	var cs clientset.Interface
@@ -783,8 +789,7 @@ var _ = SIGDescribe("Services", func() {
 		_, err := jig.CreateTCPServiceWithPort(nil, 80)
 		framework.ExpectNoError(err)
 
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{})
 
 		names := map[string]bool{}
 		defer func() {
@@ -797,25 +802,21 @@ var _ = SIGDescribe("Services", func() {
 		name1 := "pod1"
 		name2 := "pod2"
 
-		createPodOrFail(cs, ns, name1, jig.Labels, []v1.ContainerPort{{ContainerPort: 80}})
+		createPodOrFail(f, ns, name1, jig.Labels, []v1.ContainerPort{{ContainerPort: 80}})
 		names[name1] = true
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name1: {80}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{name1: {80}})
 
-		createPodOrFail(cs, ns, name2, jig.Labels, []v1.ContainerPort{{ContainerPort: 80}})
+		createPodOrFail(f, ns, name2, jig.Labels, []v1.ContainerPort{{ContainerPort: 80}})
 		names[name2] = true
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name1: {80}, name2: {80}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{name1: {80}, name2: {80}})
 
 		e2epod.DeletePodOrFail(cs, ns, name1)
 		delete(names, name1)
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name2: {80}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{name2: {80}})
 
 		e2epod.DeletePodOrFail(cs, ns, name2)
 		delete(names, name2)
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{})
 	})
 
 	/*
@@ -856,8 +857,7 @@ var _ = SIGDescribe("Services", func() {
 
 		port1 := 100
 		port2 := 101
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{})
 
 		names := map[string]bool{}
 		defer func() {
@@ -883,25 +883,21 @@ var _ = SIGDescribe("Services", func() {
 		podname1 := "pod1"
 		podname2 := "pod2"
 
-		createPodOrFail(cs, ns, podname1, jig.Labels, containerPorts1)
+		createPodOrFail(f, ns, podname1, jig.Labels, containerPorts1)
 		names[podname1] = true
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{podname1: {port1}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{podname1: {port1}})
 
-		createPodOrFail(cs, ns, podname2, jig.Labels, containerPorts2)
+		createPodOrFail(f, ns, podname2, jig.Labels, containerPorts2)
 		names[podname2] = true
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{podname1: {port1}, podname2: {port2}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{podname1: {port1}, podname2: {port2}})
 
 		e2epod.DeletePodOrFail(cs, ns, podname1)
 		delete(names, podname1)
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{podname2: {port2}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{podname2: {port2}})
 
 		e2epod.DeletePodOrFail(cs, ns, podname2)
 		delete(names, podname2)
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{})
 	})
 
 	ginkgo.It("should preserve source pod IP for traffic thru service cluster IP [LinuxOnly]", func() {
@@ -923,6 +919,7 @@ var _ = SIGDescribe("Services", func() {
 
 		ginkgo.By("creating a TCP service " + serviceName + " with type=ClusterIP in namespace " + ns)
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
+		jig.ExternalIPs = true
 		servicePort := 8080
 		tcpService, err := jig.CreateTCPServiceWithPort(nil, int32(servicePort))
 		framework.ExpectNoError(err)
@@ -955,9 +952,7 @@ var _ = SIGDescribe("Services", func() {
 			framework.ExpectNoError(err, "failed to delete pod: %s on node", serverPodName)
 		}()
 
-		// Waiting for service to expose endpoint.
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
 
 		ginkgo.By("Creating pause pod deployment")
 		deployment := createPausePodDeployment(cs, "pause-pod", ns, nodeCounts)
@@ -994,6 +989,7 @@ var _ = SIGDescribe("Services", func() {
 
 		ginkgo.By("creating a TCP service " + serviceName + " with type=ClusterIP in namespace " + ns)
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
+		jig.ExternalIPs = true
 		servicePort := 8080
 		svc, err := jig.CreateTCPServiceWithPort(nil, int32(servicePort))
 		framework.ExpectNoError(err)
@@ -1009,8 +1005,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(e2epod.WaitTimeoutForPodReadyInNamespace(f.ClientSet, pod.Name, f.Namespace.Name, framework.PodStartTimeout))
 
 		ginkgo.By("waiting for the service to expose an endpoint")
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
 
 		ginkgo.By("Checking if the pod can reach itself")
 		err = jig.CheckServiceReachability(svc, pod)
@@ -1188,6 +1183,7 @@ var _ = SIGDescribe("Services", func() {
 		}
 
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
+		jig.ExternalIPs = true
 
 		ginkgo.By("creating service " + serviceName + " with type=clusterIP in namespace " + ns)
 		clusterIPService, err := jig.CreateTCPService(func(svc *v1.Service) {
@@ -1216,6 +1212,7 @@ var _ = SIGDescribe("Services", func() {
 		serviceName := "nodeport-update-service"
 		ns := f.Namespace.Name
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
+		jig.ExternalIPs = true
 
 		ginkgo.By("creating a TCP service " + serviceName + " with type=ClusterIP in namespace " + ns)
 		tcpService, err := jig.CreateTCPService(nil)
@@ -1241,7 +1238,7 @@ var _ = SIGDescribe("Services", func() {
 		})
 		framework.ExpectNoError(err)
 
-		err = jig.CreateTCPUDPServicePods(2)
+		err = jig.CreateServicePods(2)
 		framework.ExpectNoError(err)
 		execPod := e2epod.CreateExecPodOrFail(cs, ns, "execpod", nil)
 		err = jig.CheckServiceReachability(nodePortService, execPod)
@@ -1985,7 +1982,8 @@ var _ = SIGDescribe("Services", func() {
 
 		ginkgo.By(fmt.Sprintf("creating %v on node %v", podName, nodeName))
 		execPod := e2epod.CreateExecPodOrFail(f.ClientSet, namespace, podName, func(pod *v1.Pod) {
-			pod.Spec.NodeName = nodeName
+			nodeSelection := e2epod.NodeSelection{Name: nodeName}
+			e2epod.SetNodeSelection(&pod.Spec, nodeSelection)
 		})
 
 		serviceAddress := net.JoinHostPort(serviceName, strconv.Itoa(port))
@@ -2210,6 +2208,232 @@ var _ = SIGDescribe("Services", func() {
 		ginkgo.By("fetching the Endpoint")
 		_, err = f.ClientSet.CoreV1().Endpoints(testNamespaceName).Get(context.TODO(), testEndpointName, metav1.GetOptions{})
 		framework.ExpectError(err, "should not be able to fetch Endpoint")
+	})
+
+	/*
+		Release: v1.21
+		Testname: Service, complete ServiceStatus lifecycle
+		Description: Create a service, the service MUST exist.
+		When retrieving /status the action MUST be validated.
+		When patching /status the action MUST be validated.
+		When updating /status the action MUST be validated.
+		When patching a service the action MUST be validated.
+	*/
+	framework.ConformanceIt("should complete a service status lifecycle", func() {
+
+		ns := f.Namespace.Name
+		svcResource := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "services"}
+		svcClient := f.ClientSet.CoreV1().Services(ns)
+
+		testSvcName := "test-service-" + utilrand.String(5)
+		testSvcLabels := map[string]string{"test-service-static": "true"}
+		testSvcLabelsFlat := "test-service-static=true"
+
+		w := &cache.ListWatch{
+			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+				options.LabelSelector = testSvcLabelsFlat
+				return cs.CoreV1().Services(ns).Watch(context.TODO(), options)
+			},
+		}
+
+		svcList, err := cs.CoreV1().Services("").List(context.TODO(), metav1.ListOptions{LabelSelector: testSvcLabelsFlat})
+		framework.ExpectNoError(err, "failed to list Services")
+
+		ginkgo.By("creating a Service")
+		testService := v1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   testSvcName,
+				Labels: testSvcLabels,
+			},
+			Spec: v1.ServiceSpec{
+				Type: "ClusterIP",
+				Ports: []v1.ServicePort{{
+					Name:       "http",
+					Protocol:   v1.ProtocolTCP,
+					Port:       int32(80),
+					TargetPort: intstr.FromInt(80),
+				}},
+			},
+		}
+		_, err = cs.CoreV1().Services(ns).Create(context.TODO(), &testService, metav1.CreateOptions{})
+		framework.ExpectNoError(err, "failed to create Service")
+
+		ginkgo.By("watching for the Service to be added")
+		ctx, cancel := context.WithTimeout(context.Background(), svcReadyTimeout)
+		defer cancel()
+		_, err = watchtools.Until(ctx, svcList.ResourceVersion, w, func(event watch.Event) (bool, error) {
+			if svc, ok := event.Object.(*v1.Service); ok {
+				found := svc.ObjectMeta.Name == testService.ObjectMeta.Name &&
+					svc.ObjectMeta.Namespace == ns &&
+					svc.Labels["test-service-static"] == "true"
+				if !found {
+					framework.Logf("observed Service %v in namespace %v with labels: %v & ports %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Labels, svc.Spec.Ports)
+					return false, nil
+				}
+				framework.Logf("Found Service %v in namespace %v with labels: %v & ports %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Labels, svc.Spec.Ports)
+				return found, nil
+			}
+			framework.Logf("Observed event: %+v", event.Object)
+			return false, nil
+		})
+		framework.ExpectNoError(err, "Failed to locate Service %v in namespace %v", testService.ObjectMeta.Name, ns)
+		framework.Logf("Service %s created", testSvcName)
+
+		ginkgo.By("Getting /status")
+		svcStatusUnstructured, err := f.DynamicClient.Resource(svcResource).Namespace(ns).Get(context.TODO(), testSvcName, metav1.GetOptions{}, "status")
+		framework.ExpectNoError(err, "Failed to fetch ServiceStatus of Service %s in namespace %s", testSvcName, ns)
+		svcStatusBytes, err := json.Marshal(svcStatusUnstructured)
+		framework.ExpectNoError(err, "Failed to marshal unstructured response. %v", err)
+
+		var svcStatus v1.Service
+		err = json.Unmarshal(svcStatusBytes, &svcStatus)
+		framework.ExpectNoError(err, "Failed to unmarshal JSON bytes to a Service object type")
+		framework.Logf("Service %s has LoadBalancer: %v", testSvcName, svcStatus.Status.LoadBalancer)
+
+		ginkgo.By("patching the ServiceStatus")
+		lbStatus := v1.LoadBalancerStatus{
+			Ingress: []v1.LoadBalancerIngress{{IP: "203.0.113.1"}},
+		}
+		lbStatusJSON, err := json.Marshal(lbStatus)
+		framework.ExpectNoError(err, "Failed to marshal JSON. %v", err)
+		_, err = svcClient.Patch(context.TODO(), testSvcName, types.MergePatchType,
+			[]byte(`{"metadata":{"annotations":{"patchedstatus":"true"}},"status":{"loadBalancer":`+string(lbStatusJSON)+`}}`),
+			metav1.PatchOptions{}, "status")
+		framework.ExpectNoError(err, "Could not patch service status", err)
+
+		ginkgo.By("watching for the Service to be patched")
+		ctx, cancel = context.WithTimeout(context.Background(), svcReadyTimeout)
+		defer cancel()
+
+		_, err = watchtools.Until(ctx, svcList.ResourceVersion, w, func(event watch.Event) (bool, error) {
+			if svc, ok := event.Object.(*v1.Service); ok {
+				found := svc.ObjectMeta.Name == testService.ObjectMeta.Name &&
+					svc.ObjectMeta.Namespace == ns &&
+					svc.Annotations["patchedstatus"] == "true"
+				if !found {
+					framework.Logf("observed Service %v in namespace %v with annotations: %v & LoadBalancer: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Annotations, svc.Status.LoadBalancer)
+					return false, nil
+				}
+				framework.Logf("Found Service %v in namespace %v with annotations: %v & LoadBalancer: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Annotations, svc.Status.LoadBalancer)
+				return found, nil
+			}
+			framework.Logf("Observed event: %+v", event.Object)
+			return false, nil
+		})
+		framework.ExpectNoError(err, "failed to locate Service %v in namespace %v", testService.ObjectMeta.Name, ns)
+		framework.Logf("Service %s has service status patched", testSvcName)
+
+		ginkgo.By("updating the ServiceStatus")
+
+		var statusToUpdate, updatedStatus *v1.Service
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			statusToUpdate, err = svcClient.Get(context.TODO(), testSvcName, metav1.GetOptions{})
+			framework.ExpectNoError(err, "Unable to retrieve service %s", testSvcName)
+
+			statusToUpdate.Status.Conditions = append(statusToUpdate.Status.Conditions, metav1.Condition{
+				Type:    "StatusUpdate",
+				Status:  metav1.ConditionTrue,
+				Reason:  "E2E",
+				Message: "Set from e2e test",
+			})
+
+			updatedStatus, err = svcClient.UpdateStatus(context.TODO(), statusToUpdate, metav1.UpdateOptions{})
+			return err
+		})
+		framework.ExpectNoError(err, "\n\n Failed to UpdateStatus. %v\n\n", err)
+		framework.Logf("updatedStatus.Conditions: %#v", updatedStatus.Status.Conditions)
+
+		ginkgo.By("watching for the Service to be updated")
+		ctx, cancel = context.WithTimeout(context.Background(), svcReadyTimeout)
+		defer cancel()
+		_, err = watchtools.Until(ctx, svcList.ResourceVersion, w, func(event watch.Event) (bool, error) {
+			if svc, ok := event.Object.(*v1.Service); ok {
+				found := svc.ObjectMeta.Name == testService.ObjectMeta.Name &&
+					svc.ObjectMeta.Namespace == ns &&
+					svc.Annotations["patchedstatus"] == "true"
+				if !found {
+					framework.Logf("Observed Service %v in namespace %v with annotations: %v & Conditions: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Annotations, svc.Status.LoadBalancer)
+					return false, nil
+				}
+				for _, cond := range svc.Status.Conditions {
+					if cond.Type == "StatusUpdate" &&
+						cond.Reason == "E2E" &&
+						cond.Message == "Set from e2e test" {
+						framework.Logf("Found Service %v in namespace %v with annotations: %v & Conditions: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Annotations, svc.Status.Conditions)
+						return found, nil
+					} else {
+						framework.Logf("Observed Service %v in namespace %v with annotations: %v & Conditions: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Annotations, svc.Status.LoadBalancer)
+						return false, nil
+					}
+				}
+			}
+			framework.Logf("Observed event: %+v", event.Object)
+			return false, nil
+		})
+		framework.ExpectNoError(err, "failed to locate Service %v in namespace %v", testService.ObjectMeta.Name, ns)
+		framework.Logf("Service %s has service status updated", testSvcName)
+
+		ginkgo.By("patching the service")
+		servicePatchPayload, err := json.Marshal(v1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					"test-service": "patched",
+				},
+			},
+		})
+
+		_, err = svcClient.Patch(context.TODO(), testSvcName, types.StrategicMergePatchType, []byte(servicePatchPayload), metav1.PatchOptions{})
+		framework.ExpectNoError(err, "failed to patch service. %v", err)
+
+		ginkgo.By("watching for the Service to be patched")
+		ctx, cancel = context.WithTimeout(context.Background(), svcReadyTimeout)
+		defer cancel()
+		_, err = watchtools.Until(ctx, svcList.ResourceVersion, w, func(event watch.Event) (bool, error) {
+			if svc, ok := event.Object.(*v1.Service); ok {
+				found := svc.ObjectMeta.Name == testService.ObjectMeta.Name &&
+					svc.ObjectMeta.Namespace == ns &&
+					svc.Labels["test-service"] == "patched"
+				if !found {
+					framework.Logf("observed Service %v in namespace %v with labels: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Labels)
+					return false, nil
+				}
+				framework.Logf("Found Service %v in namespace %v with labels: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Labels)
+				return found, nil
+			}
+			framework.Logf("Observed event: %+v", event.Object)
+			return false, nil
+		})
+		framework.ExpectNoError(err, "failed to locate Service %v in namespace %v", testService.ObjectMeta.Name, ns)
+		framework.Logf("Service %s patched", testSvcName)
+
+		ginkgo.By("deleting the service")
+		err = cs.CoreV1().Services(ns).Delete(context.TODO(), testSvcName, metav1.DeleteOptions{})
+		framework.ExpectNoError(err, "failed to delete the Service. %v", err)
+
+		ginkgo.By("watching for the Service to be deleted")
+		ctx, cancel = context.WithTimeout(context.Background(), svcReadyTimeout)
+		defer cancel()
+		_, err = watchtools.Until(ctx, svcList.ResourceVersion, w, func(event watch.Event) (bool, error) {
+			switch event.Type {
+			case watch.Deleted:
+				if svc, ok := event.Object.(*v1.Service); ok {
+					found := svc.ObjectMeta.Name == testService.ObjectMeta.Name &&
+						svc.ObjectMeta.Namespace == ns &&
+						svc.Labels["test-service-static"] == "true"
+					if !found {
+						framework.Logf("observed Service %v in namespace %v with labels: %v & annotations: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Labels, svc.Annotations)
+						return false, nil
+					}
+					framework.Logf("Found Service %v in namespace %v with labels: %v & annotations: %v", svc.ObjectMeta.Name, svc.ObjectMeta.Namespace, svc.Labels, svc.Annotations)
+					return found, nil
+				}
+			default:
+				framework.Logf("Observed event: %+v", event.Type)
+			}
+			return false, nil
+		})
+		framework.ExpectNoError(err, "failed to delete Service %v in namespace %v", testService.ObjectMeta.Name, ns)
+		framework.Logf("Service %s deleted", testSvcName)
 	})
 })
 
@@ -2444,16 +2668,14 @@ func createPausePodDeployment(cs clientset.Interface, name, ns string, replicas 
 }
 
 // createPodOrFail creates a pod with the specified containerPorts.
-func createPodOrFail(c clientset.Interface, ns, name string, labels map[string]string, containerPorts []v1.ContainerPort) {
+func createPodOrFail(f *framework.Framework, ns, name string, labels map[string]string, containerPorts []v1.ContainerPort) {
 	ginkgo.By(fmt.Sprintf("Creating pod %s in namespace %s", name, ns))
 	pod := e2epod.NewAgnhostPod(ns, name, nil, nil, containerPorts)
 	pod.ObjectMeta.Labels = labels
 	// Add a dummy environment variable to work around a docker issue.
 	// https://github.com/docker/docker/issues/14203
 	pod.Spec.Containers[0].Env = []v1.EnvVar{{Name: "FOO", Value: " "}}
-
-	_, err := c.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
-	framework.ExpectNoError(err, "failed to create pod %s in namespace %s", name, ns)
+	f.PodClient().CreateSync(pod)
 }
 
 // launchHostExecPod launches a hostexec pod in the given namespace and waits
@@ -2463,7 +2685,7 @@ func launchHostExecPod(client clientset.Interface, ns, name string) *v1.Pod {
 	hostExecPod := e2epod.NewExecPodSpec(ns, name, true)
 	pod, err := client.CoreV1().Pods(ns).Create(context.TODO(), hostExecPod, metav1.CreateOptions{})
 	framework.ExpectNoError(err)
-	err = e2epod.WaitForPodRunningInNamespace(client, pod)
+	err = e2epod.WaitTimeoutForPodReadyInNamespace(client, name, ns, framework.PodStartTimeout)
 	framework.ExpectNoError(err)
 	return pod
 }
@@ -2544,16 +2766,17 @@ func translatePodNameToUID(c clientset.Interface, ns string, expectedEndpoints p
 	return portsByUID, nil
 }
 
-// validateEndpointsPorts validates that the given service exists and is served by the given expectedEndpoints.
-func validateEndpointsPorts(c clientset.Interface, namespace, serviceName string, expectedEndpoints portsByPodName) error {
+// validateEndpointsPortsOrFail validates that the given service exists and is served by the given expectedEndpoints.
+func validateEndpointsPortsOrFail(c clientset.Interface, namespace, serviceName string, expectedEndpoints portsByPodName) {
 	ginkgo.By(fmt.Sprintf("waiting up to %v for service %s in namespace %s to expose endpoints %v", framework.ServiceStartTimeout, serviceName, namespace, expectedEndpoints))
 	expectedPortsByPodUID, err := translatePodNameToUID(c, namespace, expectedEndpoints)
-	if err != nil {
-		return err
-	}
+	framework.ExpectNoError(err, "failed to translate pod name to UID, ns:%s, expectedEndpoints:%v", namespace, expectedEndpoints)
 
-	i := 0
-	if pollErr := wait.PollImmediate(time.Second, framework.ServiceStartTimeout, func() (bool, error) {
+	var (
+		pollErr error
+		i       = 0
+	)
+	if pollErr = wait.PollImmediate(time.Second, framework.ServiceStartTimeout, func() (bool, error) {
 		i++
 
 		ep, err := c.CoreV1().Endpoints(namespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
@@ -2572,11 +2795,11 @@ func validateEndpointsPorts(c clientset.Interface, namespace, serviceName string
 
 		// If EndpointSlice API is enabled, then validate if appropriate EndpointSlice objects
 		// were also create/updated/deleted.
-		if _, err := c.Discovery().ServerResourcesForGroupVersion(discoveryv1beta1.SchemeGroupVersion.String()); err == nil {
+		if _, err := c.Discovery().ServerResourcesForGroupVersion(discoveryv1.SchemeGroupVersion.String()); err == nil {
 			opts := metav1.ListOptions{
 				LabelSelector: "kubernetes.io/service-name=" + serviceName,
 			}
-			es, err := c.DiscoveryV1beta1().EndpointSlices(namespace).List(context.TODO(), opts)
+			es, err := c.DiscoveryV1().EndpointSlices(namespace).List(context.TODO(), opts)
 			if err != nil {
 				framework.Logf("Failed go list EndpointSlice objects: %v", err)
 				// Retry the error
@@ -2601,9 +2824,8 @@ func validateEndpointsPorts(c clientset.Interface, namespace, serviceName string
 		} else {
 			framework.Logf("Can't list pod debug info: %v", err)
 		}
-		return fmt.Errorf("error waithing for service %s in namespace %s to expose endpoints %v: %v", serviceName, namespace, expectedEndpoints, pollErr)
 	}
-	return nil
+	framework.ExpectNoError(pollErr, "error waithing for service %s in namespace %s to expose endpoints %v: %v", serviceName, namespace, expectedEndpoints)
 }
 
 func restartApiserver(namespace string, cs clientset.Interface) error {
@@ -2637,7 +2859,7 @@ func restartComponent(cs clientset.Interface, cName, ns string, matchLabels map[
 	return err
 }
 
-var _ = SIGDescribe("SCTP [Feature:SCTP] [LinuxOnly]", func() {
+var _ = common.SIGDescribe("SCTP [Feature:SCTP] [LinuxOnly]", func() {
 	f := framework.NewDefaultFramework("sctp")
 
 	var cs clientset.Interface
@@ -2668,15 +2890,14 @@ var _ = SIGDescribe("SCTP [Feature:SCTP] [LinuxOnly]", func() {
 		framework.ExpectNoError(err, fmt.Sprintf("error while waiting for service:%s err: %v", serviceName, err))
 
 		ginkgo.By("validating endpoints do not exist yet")
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{})
 
 		ginkgo.By("creating a pod for the service")
 		names := map[string]bool{}
 
 		name1 := "pod1"
 
-		createPodOrFail(cs, ns, name1, jig.Labels, []v1.ContainerPort{{ContainerPort: 5060, Protocol: v1.ProtocolSCTP}})
+		createPodOrFail(f, ns, name1, jig.Labels, []v1.ContainerPort{{ContainerPort: 5060, Protocol: v1.ProtocolSCTP}})
 		names[name1] = true
 		defer func() {
 			for name := range names {
@@ -2686,15 +2907,13 @@ var _ = SIGDescribe("SCTP [Feature:SCTP] [LinuxOnly]", func() {
 		}()
 
 		ginkgo.By("validating endpoints exists")
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name1: {5060}})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{name1: {5060}})
 
 		ginkgo.By("deleting the pod")
 		e2epod.DeletePodOrFail(cs, ns, name1)
 		delete(names, name1)
 		ginkgo.By("validating endpoints do not exist anymore")
-		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
-		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
+		validateEndpointsPortsOrFail(cs, ns, serviceName, portsByPodName{})
 
 		ginkgo.By("validating sctp module is still not loaded")
 		sctpLoadedAtEnd := CheckSCTPModuleLoadedOnNodes(f, nodes)
@@ -2718,7 +2937,8 @@ var _ = SIGDescribe("SCTP [Feature:SCTP] [LinuxOnly]", func() {
 		podName := "hostport"
 		ports := []v1.ContainerPort{{Protocol: v1.ProtocolSCTP, ContainerPort: 5060, HostPort: 5060}}
 		podSpec := e2epod.NewAgnhostPod(f.Namespace.Name, podName, nil, nil, ports)
-		podSpec.Spec.NodeName = node.Name
+		nodeSelection := e2epod.NodeSelection{Name: node.Name}
+		e2epod.SetNodeSelection(&podSpec.Spec, nodeSelection)
 
 		ginkgo.By(fmt.Sprintf("Launching the pod on node %v", node.Name))
 		f.PodClient().CreateSync(podSpec)

@@ -157,6 +157,21 @@ func GetLocalAddrs() ([]net.IP, error) {
 	return localAddrs, nil
 }
 
+// GetLocalAddrSet return a local IPSet.
+// If failed to get local addr, will assume no local ips.
+func GetLocalAddrSet() utilnet.IPSet {
+	localAddrs, err := GetLocalAddrs()
+	if err != nil {
+		klog.ErrorS(err, "Failed to get local addresses assuming no local IPs")
+	} else if len(localAddrs) == 0 {
+		klog.InfoS("No local addresses were found")
+	}
+
+	localAddrSet := utilnet.IPSet{}
+	localAddrSet.Insert(localAddrs...)
+	return localAddrSet
+}
+
 // ShouldSkipService checks if a given service should skip proxying
 func ShouldSkipService(service *v1.Service) bool {
 	// if ClusterIP is "None" or empty, skip proxying
@@ -462,8 +477,37 @@ func WriteLine(buf *bytes.Buffer, words ...string) {
 	}
 }
 
+// WriteRuleLine prepends the strings "-A" and chainName to the buffer and calls
+// WriteLine to join all the words into the buffer and terminate with newline.
+func WriteRuleLine(buf *bytes.Buffer, chainName string, words ...string) {
+	if len(words) == 0 {
+		return
+	}
+	buf.WriteString("-A ")
+	buf.WriteString(chainName)
+	buf.WriteByte(' ')
+	WriteLine(buf, words...)
+}
+
 // WriteBytesLine write bytes to buffer, terminate with newline
 func WriteBytesLine(buf *bytes.Buffer, bytes []byte) {
 	buf.Write(bytes)
 	buf.WriteByte('\n')
+}
+
+// RevertPorts is closing ports in replacementPortsMap but not in originalPortsMap. In other words, it only
+// closes the ports opened in this sync.
+func RevertPorts(replacementPortsMap, originalPortsMap map[utilnet.LocalPort]utilnet.Closeable) {
+	for k, v := range replacementPortsMap {
+		// Only close newly opened local ports - leave ones that were open before this update
+		if originalPortsMap[k] == nil {
+			klog.V(2).Infof("Closing local port %s", k.String())
+			v.Close()
+		}
+	}
+}
+
+// CountBytesLines counts the number of lines in a bytes slice
+func CountBytesLines(b []byte) int {
+	return bytes.Count(b, []byte{'\n'})
 }
