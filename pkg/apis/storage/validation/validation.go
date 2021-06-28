@@ -43,8 +43,8 @@ const (
 	maxAttachedVolumeMetadataSize = 256 * (1 << 10) // 256 kB
 	maxVolumeErrorMessageSize     = 1024
 
-	csiNodeIDMaxLength       = 128
-	csiNodeIDLongerMaxLength = 192
+	csiNodeIDMaxLength       = 192
+	csiNodeIDLongerMaxLength = 256
 )
 
 // CSINodeValidationOptions contains the validation options for validating CSINode
@@ -351,7 +351,7 @@ func validateCSINodeDriverNodeID(nodeID string, fldPath *field.Path, validationO
 		maxLength = csiNodeIDLongerMaxLength
 	}
 	if len(nodeID) > maxLength {
-		allErrs = append(allErrs, field.Invalid(fldPath, nodeID, fmt.Sprintf("must be %d characters or less", csiNodeIDMaxLength)))
+		allErrs = append(allErrs, field.Invalid(fldPath, nodeID, fmt.Sprintf("must be %d characters or less", maxLength)))
 	}
 	return allErrs
 }

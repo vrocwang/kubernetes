@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apiserver/pkg/endpoints/metrics"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/klog/v2"
 )
@@ -97,7 +98,7 @@ func WithLogging(handler http.Handler, pred StacktracePred) http.Handler {
 		req = req.WithContext(context.WithValue(ctx, respLoggerContextKey, rl))
 
 		if klog.V(3).Enabled() {
-			defer func() { klog.InfoS("HTTP", rl.LogArgs()...) }()
+			defer rl.Log()
 		}
 		handler.ServeHTTP(rl, req)
 	})
@@ -180,38 +181,44 @@ func AddInfof(ctx context.Context, format string, data ...interface{}) {
 	}
 }
 
-func (rl *respLogger) LogArgs() []interface{} {
+// Log is intended to be called once at the end of your request handler, via defer
+func (rl *respLogger) Log() {
 	latency := time.Since(rl.startTime)
 	auditID := request.GetAuditIDTruncated(rl.req)
-	if rl.hijacked {
-		return []interface{}{
-			"verb", rl.req.Method,
-			"URI", rl.req.RequestURI,
-			"latency", latency,
-			"userAgent", rl.req.UserAgent(),
-			"audit-ID", auditID,
-			"srcIP", rl.req.RemoteAddr,
-			"hijacked", true,
-		}
+
+	verb := rl.req.Method
+	if requestInfo, ok := request.RequestInfoFrom(rl.req.Context()); ok {
+		// If we can find a requestInfo, we can get a scope, and then
+		// we can convert GETs to LISTs when needed.
+		scope := metrics.CleanScope(requestInfo)
+		verb = metrics.CanonicalVerb(strings.ToUpper(verb), scope)
 	}
-	args := []interface{}{
-		"verb", rl.req.Method,
+	// mark APPLY requests and WATCH requests correctly.
+	verb = metrics.CleanVerb(verb, rl.req)
+
+	keysAndValues := []interface{}{
+		"verb", verb,
 		"URI", rl.req.RequestURI,
 		"latency", latency,
 		"userAgent", rl.req.UserAgent(),
 		"audit-ID", auditID,
 		"srcIP", rl.req.RemoteAddr,
-		"resp", rl.status,
-	}
-	if len(rl.statusStack) > 0 {
-		args = append(args, "statusStack", rl.statusStack)
 	}
 
-	info := rl.addedInfo.String()
-	if len(info) > 0 {
-		args = append(args, "addedInfo", info)
+	if rl.hijacked {
+		keysAndValues = append(keysAndValues, "hijacked", true)
+	} else {
+		keysAndValues = append(keysAndValues, "resp", rl.status)
+		if len(rl.statusStack) > 0 {
+			keysAndValues = append(keysAndValues, "statusStack", rl.statusStack)
+		}
+		info := rl.addedInfo.String()
+		if len(info) > 0 {
+			keysAndValues = append(keysAndValues, "addedInfo", info)
+		}
 	}
-	return args
+
+	klog.InfoSDepth(1, "HTTP", keysAndValues...)
 }
 
 // Header implements http.ResponseWriter.

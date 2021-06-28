@@ -626,6 +626,8 @@ function append_or_replace_prefixed_line {
 function write-pki-data {
   local data="${1}"
   local path="${2}"
+  # remove the path if it exists
+  rm -f "${path}"
   if [[ -n "${KUBE_PKI_READERS_GROUP:-}" ]]; then
     (umask 027; echo "${data}" | base64 --decode > "${path}")
     chgrp "${KUBE_PKI_READERS_GROUP:-}" "${path}"
@@ -1212,12 +1214,12 @@ rules:
     omitStages:
       - "RequestReceived"
 
-  # Secrets, ConfigMaps, and TokenReviews can contain sensitive & binary data,
+  # Secrets, ConfigMaps, TokenRequest and TokenReviews can contain sensitive & binary data,
   # so only log at the Metadata level.
   - level: Metadata
     resources:
       - group: "" # core
-        resources: ["secrets", "configmaps"]
+        resources: ["secrets", "configmaps", "serviceaccounts/token"]
       - group: authentication.k8s.io
         resources: ["tokenreviews"]
     omitStages:
@@ -1932,6 +1934,8 @@ function prepare-konnectivity-server-manifest {
   params+=("--agent-service-account=konnectivity-agent")
   params+=("--kubeconfig=/etc/srv/kubernetes/konnectivity-server/kubeconfig")
   params+=("--authentication-audience=system:konnectivity-server")
+  params+=("--kubeconfig-qps=75")
+  params+=("--kubeconfig-burst=150")
   konnectivity_args=""
   for param in "${params[@]}"; do
     konnectivity_args+=", \"${param}\""
@@ -2123,12 +2127,6 @@ function start-kube-controller-manager {
   fi
   if [[ -n "${CLUSTER_SIGNING_DURATION:-}" ]]; then
     params+=("--cluster-signing-duration=$CLUSTER_SIGNING_DURATION")
-  fi
-  # Disable using HPA metrics REST clients if metrics-server isn't enabled,
-  # or if we want to explicitly disable it by setting HPA_USE_REST_CLIENT.
-  if [[ "${ENABLE_METRICS_SERVER:-}" != "true" ]] ||
-     [[ "${HPA_USE_REST_CLIENTS:-}" == "false" ]]; then
-    params+=("--horizontal-pod-autoscaler-use-rest-clients=false")
   fi
   if [[ -n "${PV_RECYCLER_OVERRIDE_TEMPLATE:-}" ]]; then
     params+=("--pv-recycler-pod-template-filepath-nfs=$PV_RECYCLER_OVERRIDE_TEMPLATE")

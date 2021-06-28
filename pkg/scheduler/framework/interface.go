@@ -525,7 +525,7 @@ type Framework interface {
 	HasScorePlugins() bool
 
 	// ListPlugins returns a map of extension point name to list of configured Plugins.
-	ListPlugins() map[string][]config.Plugin
+	ListPlugins() *config.Plugins
 
 	// ProfileName returns the profile name associated to this framework.
 	ProfileName() string
@@ -585,7 +585,7 @@ type PostFilterResult struct {
 
 // PodNominator abstracts operations to maintain nominated Pods.
 type PodNominator interface {
-	// AddNominatedPod adds the given pod to the nominated pod map or
+	// AddNominatedPod adds the given pod to the nominator or
 	// updates it if it already exists.
 	AddNominatedPod(pod *PodInfo, nodeName string)
 	// DeleteNominatedPodIfExists deletes nominatedPod from internal cache. It's a no-op if it doesn't exist.

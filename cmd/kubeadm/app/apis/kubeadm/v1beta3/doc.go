@@ -31,6 +31,10 @@ limitations under the License.
 // This would result in the field values to be omitted when API structures are printed with klog.
 // - Add "InitConfiguration.SkipPhases", "JoinConfiguration.SkipPhases" to allow skipping
 // a list of phases during kubeadm init/join command execution.
+// - Add "InitConfiguration.NodeRegistration.ImagePullPolicy" and "JoinConfiguration.NodeRegistration.ImagePullPolicy"
+// to allow specifying the images pull policy during kubeadm "init" and "join". The value must be one of "Always", "Never" or
+// "IfNotPresent". "IfNotPresent" is the default, which has been the existing behavior prior to this addition.
+
 //
 // Migration from old kubeadm config versions
 //
@@ -120,7 +124,7 @@ limitations under the License.
 // including settings for:
 //
 // - Networking, that holds configuration for the networking topology of the cluster; use it e.g. to customize
-// node subnet or services subnet.
+// pod subnet or services subnet.
 //
 // - Etcd configurations; use it e.g. to customize the local etcd or to configure the API server
 // for using an external etcd cluster.
@@ -175,6 +179,7 @@ limitations under the License.
 // 	    v: 4
 //	  ignorePreflightErrors:
 //	  - IsPrivilegedUser
+//    imagePullPolicy: "IfNotPresent"
 // 	localAPIEndpoint:
 // 	  advertiseAddress: "10.100.0.1"
 // 	  bindPort: 6443
@@ -204,10 +209,10 @@ limitations under the License.
 // 	    # certFile: "/etcd/kubernetes/pki/etcd/etcd.crt"
 // 	    # keyFile: "/etcd/kubernetes/pki/etcd/etcd.key"
 // 	networking:
-// 	  serviceSubnet: "10.96.0.0/12"
-// 	  podSubnet: "10.100.0.1/24"
+// 	  serviceSubnet: "10.96.0.0/16"
+// 	  podSubnet: "10.244.0.0/24"
 // 	  dnsDomain: "cluster.local"
-// 	kubernetesVersion: "v1.12.0"
+// 	kubernetesVersion: "v1.21.0"
 // 	controlPlaneEndpoint: "10.100.0.1:6443"
 // 	apiServer:
 // 	  extraArgs:

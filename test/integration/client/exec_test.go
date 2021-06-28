@@ -438,6 +438,7 @@ func TestExecPluginViaClient(t *testing.T) {
 					"--random-arg-to-avoid-authenticator-cache-hits",
 					rand.String(10),
 				},
+				InteractiveMode: clientcmdapi.IfAvailableExecInteractiveMode,
 			}
 			clientConfig.Wrap(func(rt http.RoundTripper) http.RoundTripper {
 				return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -569,8 +570,14 @@ func (is *informerSpy) clear() {
 // waitForEvents waits for adds, updates, and deletes to be populated with at least one event.
 func (is *informerSpy) waitForEvents(t *testing.T, wantEvents bool) {
 	t.Helper()
+	// wait for create/update/delete 3 events for 30 seconds
+	waitTimeout := time.Second * 30
+	if !wantEvents {
+		// wait just 15 seconds for no events
+		waitTimeout = time.Second * 15
+	}
 
-	err := wait.PollImmediate(time.Second, time.Second*30, func() (bool, error) {
+	err := wait.PollImmediate(time.Second, waitTimeout, func() (bool, error) {
 		is.mu.Lock()
 		defer is.mu.Unlock()
 		return len(is.adds) > 0 && len(is.updates) > 0 && len(is.deletes) > 0, nil
@@ -647,7 +654,8 @@ func TestExecPluginViaInformer(t *testing.T) {
 			clientConfig.ExecProvider = &clientcmdapi.ExecConfig{
 				Command: "testdata/exec-plugin.sh",
 				// TODO(ankeesler): move to v1 once exec plugins go GA.
-				APIVersion: "client.authentication.k8s.io/v1beta1",
+				APIVersion:      "client.authentication.k8s.io/v1beta1",
+				InteractiveMode: clientcmdapi.IfAvailableExecInteractiveMode,
 			}
 
 			if test.clientConfigFunc != nil {
@@ -681,7 +689,8 @@ func (e *execPlugin) config() *clientcmdapi.ExecConfig {
 	return &clientcmdapi.ExecConfig{
 		Command: "testdata/exec-plugin.sh",
 		// TODO(ankeesler): move to v1 once exec plugins go GA.
-		APIVersion: "client.authentication.k8s.io/v1beta1",
+		APIVersion:      "client.authentication.k8s.io/v1beta1",
+		InteractiveMode: clientcmdapi.IfAvailableExecInteractiveMode,
 		Env: []clientcmdapi.ExecEnvVar{
 			{
 				Name:  outputFileEnvVar,
@@ -905,14 +914,14 @@ func startConfigMapInformer(ctx context.Context, t *testing.T, client clientset.
 func waitForInformerSync(ctx context.Context, t *testing.T, informer cache.SharedIndexInformer, wantSynced bool, lastSyncResourceVersion string) {
 	t.Helper()
 
-	syncCtx, cancel := context.WithTimeout(ctx, time.Second*30)
+	syncCtx, cancel := context.WithTimeout(ctx, time.Second*60)
 	defer cancel()
 	if gotSynced := cache.WaitForCacheSync(syncCtx.Done(), informer.HasSynced); wantSynced != gotSynced {
 		t.Fatalf("wanted sync %t, got sync %t", wantSynced, gotSynced)
 	}
 
 	if len(lastSyncResourceVersion) != 0 {
-		if err := wait.PollImmediate(time.Second, time.Second*30, func() (bool, error) {
+		if err := wait.PollImmediate(time.Second, time.Second*60, func() (bool, error) {
 			return informer.LastSyncResourceVersion() != lastSyncResourceVersion, nil
 		}); err != nil {
 			t.Fatalf("informer never changed resource versions from %q: %v", lastSyncResourceVersion, err)

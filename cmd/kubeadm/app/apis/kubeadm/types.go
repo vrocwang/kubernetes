@@ -131,6 +131,8 @@ type ClusterConfiguration struct {
 // ControlPlaneComponent holds settings common to control plane component of the cluster
 type ControlPlaneComponent struct {
 	// ExtraArgs is an extra set of flags to pass to the control plane component.
+	// A key in this map is the flag name as it appears on the
+	// command line except without leading dash(es).
 	// TODO: This is temporary and ideally we would like to switch all components to
 	// use ComponentConfig + ConfigMaps.
 	ExtraArgs map[string]string
@@ -213,10 +215,17 @@ type NodeRegistrationOptions struct {
 	// KubeletExtraArgs passes through extra arguments to the kubelet. The arguments here are passed to the kubelet command line via the environment file
 	// kubeadm writes at runtime for the kubelet to source. This overrides the generic base-level configuration in the kubelet-config-1.X ConfigMap
 	// Flags have higher priority when parsing. These values are local and specific to the node kubeadm is executing on.
+	// A key in this map is the flag name as it appears on the
+	// command line except without leading dash(es).
 	KubeletExtraArgs map[string]string
 
 	// IgnorePreflightErrors provides a slice of pre-flight errors to be ignored when the current node is registered.
 	IgnorePreflightErrors []string
+
+	// ImagePullPolicy specifies the policy for image pulling during kubeadm "init" and "join" operations.
+	// The value of this field must be one of "Always", "IfNotPresent" or "Never".
+	// If this field is unset kubeadm will default it to "IfNotPresent", or pull the required images if not present on the host.
+	ImagePullPolicy v1.PullPolicy `json:"imagePullPolicy,omitempty"`
 }
 
 // Networking contains elements describing cluster's networking configuration.
@@ -276,6 +285,8 @@ type LocalEtcd struct {
 
 	// ExtraArgs are extra arguments provided to the etcd binary
 	// when run inside a static pod.
+	// A key in this map is the flag name as it appears on the
+	// command line except without leading dash(es).
 	ExtraArgs map[string]string
 
 	// ServerCertSANs sets extra Subject Alternative Names for the etcd server signing cert.

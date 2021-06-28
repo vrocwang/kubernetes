@@ -86,9 +86,9 @@ readonly KUBE_RSYNC_PORT="${KUBE_RSYNC_PORT:-}"
 readonly KUBE_CONTAINER_RSYNC_PORT=8730
 
 # These are the default versions (image tags) for their respective base images.
-readonly __default_debian_iptables_version=buster-v1.6.1
-readonly __default_go_runner_version=v2.3.1-go1.16.4-buster.0
-readonly __default_setcap_version=buster-v2.0.1
+readonly __default_debian_iptables_version=buster-v1.6.5
+readonly __default_go_runner_version=v2.3.1-go1.16.5-buster.0
+readonly __default_setcap_version=buster-v2.0.3
 
 # These are the base images for the Docker-wrapped binaries.
 readonly KUBE_GORUNNER_IMAGE="${KUBE_GORUNNER_IMAGE:-$KUBE_BASE_IMAGE_REGISTRY/go-runner:$__default_go_runner_version}"
@@ -397,11 +397,11 @@ function kube::build::docker_build() {
   local build_args
   IFS=" " read -r -a build_args <<< "$4"
   readonly build_args
-  local -ra build_cmd=("${DOCKER[@]}" build -t "${image}" "--pull=${pull}" "${build_args[@]}" "${context_dir}")
+  local -ra build_cmd=("${DOCKER[@]}" buildx build --load -t "${image}" "--pull=${pull}" "${build_args[@]}" "${context_dir}")
 
   kube::log::status "Building Docker image ${image}"
   local docker_output
-  docker_output=$("${build_cmd[@]}" 2>&1) || {
+  docker_output=$(DOCKER_CLI_EXPERIMENTAL=enabled "${build_cmd[@]}" 2>&1) || {
     cat <<EOF >&2
 +++ Docker build command failed for ${image}
 
@@ -409,7 +409,7 @@ ${docker_output}
 
 To retry manually, run:
 
-${build_cmd[*]}
+DOCKER_CLI_EXPERIMENTAL=enabled ${build_cmd[*]}
 
 EOF
     return 1
