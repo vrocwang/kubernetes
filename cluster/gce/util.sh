@@ -88,13 +88,13 @@ function set-linux-node-image() {
 function set-windows-node-image() {
   WINDOWS_NODE_IMAGE_PROJECT="windows-cloud"
   if [[ "${WINDOWS_NODE_OS_DISTRIBUTION}" == "win2019" ]]; then
-    WINDOWS_NODE_IMAGE="windows-server-2019-dc-core-v20210413"
+    WINDOWS_NODE_IMAGE="windows-server-2019-dc-core-v20210914"
   elif [[ "${WINDOWS_NODE_OS_DISTRIBUTION}" == "win1909" ]]; then
     WINDOWS_NODE_IMAGE="windows-server-1909-dc-core-v20210413"
   elif [[ "${WINDOWS_NODE_OS_DISTRIBUTION}" == "win2004" ]]; then
-    WINDOWS_NODE_IMAGE="windows-server-2004-dc-core-v20210413"
+    WINDOWS_NODE_IMAGE="windows-server-2004-dc-core-v20210914"
   elif [[ "${WINDOWS_NODE_OS_DISTRIBUTION,,}" == "win20h2" ]]; then
-    WINDOWS_NODE_IMAGE="windows-server-20h2-dc-core-v20210413"
+    WINDOWS_NODE_IMAGE="windows-server-20h2-dc-core-v20210914"
   else
     echo "Unknown WINDOWS_NODE_OS_DISTRIBUTION ${WINDOWS_NODE_OS_DISTRIBUTION}" >&2
     exit 1
@@ -532,7 +532,7 @@ function tars_from_version() {
     KUBE_MANIFESTS_TAR_HASH=$(curl "${KUBE_MANIFESTS_TAR_URL}" --silent --show-error | ${sha512sum})
     KUBE_MANIFESTS_TAR_HASH=${KUBE_MANIFESTS_TAR_HASH%%[[:blank:]]*}
   elif [[ ${KUBE_VERSION} =~ ${KUBE_CI_VERSION_REGEX} ]]; then
-    SERVER_BINARY_TAR_URL="https://storage.googleapis.com/kubernetes-release-dev/ci/${KUBE_VERSION}/kubernetes-server-linux-amd64.tar.gz"
+    SERVER_BINARY_TAR_URL="https://storage.googleapis.com/k8s-release-dev/ci/${KUBE_VERSION}/kubernetes-server-linux-amd64.tar.gz"
     # TODO: Clean this up.
     KUBE_MANIFESTS_TAR_URL="${SERVER_BINARY_TAR_URL/server-linux-amd64/manifests}"
     KUBE_MANIFESTS_TAR_HASH=$(curl "${KUBE_MANIFESTS_TAR_URL}" --silent --show-error | ${sha512sum})
@@ -762,9 +762,6 @@ function construct-linux-kubelet-flags {
   flags+=" --experimental-check-node-capabilities-before-mount=true"
   # Keep in sync with the mkdir command in configure-helper.sh (until the TODO is resolved)
   flags+=" --cert-dir=/var/lib/kubelet/pki/"
-  # Configure the directory that the Kubelet should use to store dynamic config checkpoints
-  flags+=" --dynamic-config-dir=/var/lib/kubelet/dynamic-config"
-
 
   if [[ "${node_type}" == "master" ]]; then
     flags+=" ${MASTER_KUBELET_TEST_ARGS:-}"
@@ -1025,7 +1022,7 @@ EOF
 # cat the Kubelet config yaml for masters
 function print-master-kubelet-config {
   cat <<EOF
-enableDebuggingHandlers: false
+enableDebuggingHandlers: ${MASTER_KUBELET_ENABLE_DEBUGGING_HANDLERS:-false}
 hairpinMode: none
 staticPodPath: /etc/kubernetes/manifests
 authentication:
@@ -1049,7 +1046,7 @@ EOF
 # cat the Kubelet config yaml in common between linux nodes and windows nodes
 function print-common-node-kubelet-config {
   cat <<EOF
-enableDebuggingHandlers: true
+enableDebuggingHandlers: ${KUBELET_ENABLE_DEBUGGING_HANDLERS:-true}
 EOF
   if [[ "${HAIRPIN_MODE:-}" == "promiscuous-bridge" ]] || \
      [[ "${HAIRPIN_MODE:-}" == "hairpin-veth" ]] || \

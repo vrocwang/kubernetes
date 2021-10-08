@@ -20,7 +20,6 @@ import (
 	"errors"
 	goflag "flag"
 	"fmt"
-	"math/rand"
 	"os"
 	"time"
 
@@ -35,13 +34,14 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
+	"k8s.io/component-base/cli"
 	cliflag "k8s.io/component-base/cli/flag"
-	"k8s.io/component-base/logs"
 	_ "k8s.io/component-base/metrics/prometheus/restclient" // for client metric registration
 	_ "k8s.io/component-base/metrics/prometheus/version"    // for version metric registration
 	"k8s.io/component-base/version"
 	"k8s.io/component-base/version/verflag"
+	fakesysctl "k8s.io/component-helpers/node/utils/sysctl/testing"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/cluster/ports"
@@ -51,7 +51,6 @@ import (
 	fakeremote "k8s.io/kubernetes/pkg/kubelet/cri/remote/fake"
 	"k8s.io/kubernetes/pkg/kubemark"
 	fakeiptables "k8s.io/kubernetes/pkg/util/iptables/testing"
-	fakesysctl "k8s.io/kubernetes/pkg/util/sysctl/testing"
 	utiltaints "k8s.io/kubernetes/pkg/util/taints"
 	fakeexec "k8s.io/utils/exec/testing"
 )
@@ -131,22 +130,9 @@ func (c *hollowNodeConfig) createHollowKubeletOptions() *kubemark.HollowKubletOp
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-
 	command := newHollowNodeCommand()
-
-	// TODO: once we switch everything over to Cobra commands, we can go back to calling
-	// cliflag.InitFlags() (by removing its pflag.Parse() call). For now, we have to set the
-	// normalize func and add the go flag set by hand.
-	pflag.CommandLine.SetNormalizeFunc(cliflag.WordSepNormalizeFunc)
-	pflag.CommandLine.AddGoFlagSet(goflag.CommandLine)
-	// cliflag.InitFlags()
-	logs.InitLogs()
-	defer logs.FlushLogs()
-
-	if err := command.Execute(); err != nil {
-		os.Exit(1)
-	}
+	code := cli.Run(command)
+	os.Exit(code)
 }
 
 // newControllerManagerCommand creates a *cobra.Command object with default parameters
@@ -172,7 +158,10 @@ func newHollowNodeCommand() *cobra.Command {
 			return nil
 		},
 	}
-	s.addFlags(cmd.Flags())
+
+	fs := cmd.Flags()
+	fs.AddGoFlagSet(goflag.CommandLine) // for flags like --docker-only
+	s.addFlags(fs)
 
 	return cmd
 }
@@ -274,8 +263,8 @@ func run(cmd *cobra.Command, config *hollowNodeConfig) {
 		execer := &fakeexec.FakeExec{
 			LookPathFunc: func(_ string) (string, error) { return "", errors.New("fake execer") },
 		}
-		eventBroadcaster := record.NewBroadcaster()
-		recorder := eventBroadcaster.NewRecorder(legacyscheme.Scheme, v1.EventSource{Component: "kube-proxy", Host: config.NodeName})
+		eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: client.EventsV1()})
+		recorder := eventBroadcaster.NewRecorder(legacyscheme.Scheme, "kube-proxy")
 
 		hollowProxy, err := kubemark.NewHollowProxyOrDie(
 			config.NodeName,

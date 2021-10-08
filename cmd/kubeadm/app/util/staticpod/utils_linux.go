@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 /*
@@ -23,12 +24,14 @@ import (
 	"path/filepath"
 
 	"github.com/pkg/errors"
+
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/utils/pointer"
+
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	certphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/users"
-	"k8s.io/utils/pointer"
 )
 
 type pathOwnerAndPermissionsUpdaterFunc func(path string, uid, gid int64, perms uint32) error
@@ -58,8 +61,8 @@ func RunComponentAsNonRoot(componentName string, pod *v1.Pod, usersAndGroups *us
 	case kubeadmconstants.KubeScheduler:
 		return runKubeSchedulerAsNonRoot(
 			pod,
-			usersAndGroups.Users.ID(kubeadmconstants.KubeControllerManagerUserName),
-			usersAndGroups.Groups.ID(kubeadmconstants.KubeControllerManagerUserName),
+			usersAndGroups.Users.ID(kubeadmconstants.KubeSchedulerUserName),
+			usersAndGroups.Groups.ID(kubeadmconstants.KubeSchedulerUserName),
 			users.UpdatePathOwnerAndPermissions,
 		)
 	case kubeadmconstants.Etcd:

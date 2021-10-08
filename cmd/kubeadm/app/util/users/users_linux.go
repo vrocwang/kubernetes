@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 /*
@@ -33,6 +34,7 @@ import (
 	"github.com/pkg/errors"
 
 	"k8s.io/klog/v2"
+
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 )
 

@@ -18,7 +18,10 @@ package validation
 
 import (
 	"fmt"
+	"net"
 	"reflect"
+	"strconv"
+	"strings"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
@@ -30,8 +33,8 @@ import (
 	componentbasevalidation "k8s.io/component-base/config/validation"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
-	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta1"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta2"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta3"
 )
 
 // ValidateKubeSchedulerConfiguration ensures validation of the KubeSchedulerConfiguration struct
@@ -59,11 +62,31 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 		}
 		errs = append(errs, validateCommonQueueSort(profilesPath, cc.Profiles)...)
 	}
-	for _, msg := range validation.IsValidSocketAddr(cc.HealthzBindAddress) {
-		errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, msg))
+	if len(cc.HealthzBindAddress) > 0 {
+		host, port, err := splitHostIntPort(cc.HealthzBindAddress)
+		if err != nil {
+			errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, err.Error()))
+		} else {
+			if errMsgs := validation.IsValidIP(host); errMsgs != nil {
+				errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, strings.Join(errMsgs, ",")))
+			}
+			if port != 0 {
+				errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, "must be empty or with an explicit 0 port"))
+			}
+		}
 	}
-	for _, msg := range validation.IsValidSocketAddr(cc.MetricsBindAddress) {
-		errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, msg))
+	if len(cc.MetricsBindAddress) > 0 {
+		host, port, err := splitHostIntPort(cc.MetricsBindAddress)
+		if err != nil {
+			errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, err.Error()))
+		} else {
+			if errMsgs := validation.IsValidIP(host); errMsgs != nil {
+				errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, strings.Join(errMsgs, ",")))
+			}
+			if port != 0 {
+				errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, "must be empty or with an explicit 0 port"))
+			}
+		}
 	}
 	if cc.PercentageOfNodesToScore < 0 || cc.PercentageOfNodesToScore > 100 {
 		errs = append(errs, field.Invalid(field.NewPath("percentageOfNodesToScore"),
@@ -82,6 +105,18 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 	return utilerrors.Flatten(utilerrors.NewAggregate(errs))
 }
 
+func splitHostIntPort(s string) (string, int, error) {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return "", 0, err
+	}
+	portInt, err := strconv.Atoi(port)
+	if err != nil {
+		return "", 0, err
+	}
+	return host, portInt, err
+}
+
 type removedPlugins struct {
 	schemeGroupVersion string
 	plugins            []string
@@ -92,12 +127,19 @@ type removedPlugins struct {
 // version (even if the list of removed plugins is empty).
 var removedPluginsByVersion = []removedPlugins{
 	{
-		schemeGroupVersion: v1beta1.SchemeGroupVersion.String(),
-		plugins:            []string{},
+		schemeGroupVersion: v1beta2.SchemeGroupVersion.String(),
+		plugins: []string{
+			"NodeLabel",
+			"ServiceAffinity",
+			"NodePreferAvoidPods",
+			"NodeResourcesLeastAllocated",
+			"NodeResourcesMostAllocated",
+			"RequestedToCapacityRatio",
+		},
 	},
 	{
-		schemeGroupVersion: v1beta2.SchemeGroupVersion.String(),
-		plugins:            []string{"NodeLabel", "ServiceAffinity", "NodePreferAvoidPods"},
+		schemeGroupVersion: v1beta3.SchemeGroupVersion.String(),
+		plugins:            []string{},
 	},
 }
 
@@ -139,19 +181,43 @@ func validateKubeSchedulerProfile(path *field.Path, apiVersion string, profile *
 func validatePluginConfig(path *field.Path, apiVersion string, profile *config.KubeSchedulerProfile) []error {
 	var errs []error
 	m := map[string]interface{}{
-		"DefaultPreemption":           ValidateDefaultPreemptionArgs,
-		"InterPodAffinity":            ValidateInterPodAffinityArgs,
-		"NodeAffinity":                ValidateNodeAffinityArgs,
-		"NodeLabel":                   ValidateNodeLabelArgs,
-		"NodeResourcesFitArgs":        ValidateNodeResourcesFitArgs,
-		"NodeResourcesLeastAllocated": ValidateNodeResourcesLeastAllocatedArgs,
-		"NodeResourcesMostAllocated":  ValidateNodeResourcesMostAllocatedArgs,
-		"PodTopologySpread":           ValidatePodTopologySpreadArgs,
-		"RequestedToCapacityRatio":    ValidateRequestedToCapacityRatioArgs,
-		"VolumeBinding":               ValidateVolumeBindingArgs,
+		"DefaultPreemption":               ValidateDefaultPreemptionArgs,
+		"InterPodAffinity":                ValidateInterPodAffinityArgs,
+		"NodeAffinity":                    ValidateNodeAffinityArgs,
+		"NodeLabel":                       ValidateNodeLabelArgs,
+		"NodeResourcesBalancedAllocation": ValidateNodeResourcesBalancedAllocationArgs,
+		"NodeResourcesFitArgs":            ValidateNodeResourcesFitArgs,
+		"NodeResourcesLeastAllocated":     ValidateNodeResourcesLeastAllocatedArgs,
+		"NodeResourcesMostAllocated":      ValidateNodeResourcesMostAllocatedArgs,
+		"PodTopologySpread":               ValidatePodTopologySpreadArgs,
+		"RequestedToCapacityRatio":        ValidateRequestedToCapacityRatioArgs,
+		"VolumeBinding":                   ValidateVolumeBindingArgs,
+	}
+
+	if profile.Plugins != nil {
+		stagesToPluginSet := map[string]config.PluginSet{
+			"queueSort":  profile.Plugins.QueueSort,
+			"preFilter":  profile.Plugins.PreFilter,
+			"filter":     profile.Plugins.Filter,
+			"postFilter": profile.Plugins.PostFilter,
+			"preScore":   profile.Plugins.PreScore,
+			"score":      profile.Plugins.Score,
+			"reserve":    profile.Plugins.Reserve,
+			"permit":     profile.Plugins.Permit,
+			"preBind":    profile.Plugins.PreBind,
+			"bind":       profile.Plugins.Bind,
+			"postBind":   profile.Plugins.PostBind,
+		}
+
+		pluginsPath := path.Child("plugins")
+		for s, p := range stagesToPluginSet {
+			errs = append(errs, validatePluginSetForRemovedPlugins(
+				pluginsPath.Child(s), apiVersion, p)...)
+		}
 	}
 
 	seenPluginConfig := make(sets.String)
+
 	for i := range profile.PluginConfig {
 		pluginConfigPath := path.Child("pluginConfig").Index(i)
 		name := profile.PluginConfig[i].Name
@@ -161,44 +227,21 @@ func validatePluginConfig(path *field.Path, apiVersion string, profile *config.K
 		} else {
 			seenPluginConfig.Insert(name)
 		}
-		if validateFunc, ok := m[name]; ok {
+		if removed, removedVersion := isPluginRemoved(apiVersion, name); removed {
+			errs = append(errs, field.Invalid(pluginConfigPath, name, fmt.Sprintf("was removed in version %q (KubeSchedulerConfiguration is version %q)", removedVersion, apiVersion)))
+		} else if validateFunc, ok := m[name]; ok {
 			// type mismatch, no need to validate the `args`.
 			if reflect.TypeOf(args) != reflect.ValueOf(validateFunc).Type().In(1) {
 				errs = append(errs, field.Invalid(pluginConfigPath.Child("args"), args, "has to match plugin args"))
-				return errs
-			}
-			in := []reflect.Value{reflect.ValueOf(pluginConfigPath.Child("args")), reflect.ValueOf(args)}
-			res := reflect.ValueOf(validateFunc).Call(in)
-			// It's possible that validation function return a Aggregate, just append here and it will be flattened at the end of CC validation.
-			if res[0].Interface() != nil {
-				errs = append(errs, res[0].Interface().(error))
+			} else {
+				in := []reflect.Value{reflect.ValueOf(pluginConfigPath.Child("args")), reflect.ValueOf(args)}
+				res := reflect.ValueOf(validateFunc).Call(in)
+				// It's possible that validation function return a Aggregate, just append here and it will be flattened at the end of CC validation.
+				if res[0].Interface() != nil {
+					errs = append(errs, res[0].Interface().(error))
+				}
 			}
 		}
-	}
-	if profile.Plugins != nil {
-		pluginsPath := path.Child("plugins")
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("queueSort"), apiVersion, profile.Plugins.QueueSort)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("preFilter"), apiVersion, profile.Plugins.PreFilter)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("filter"), apiVersion, profile.Plugins.Filter)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("postFilter"), apiVersion, profile.Plugins.PostFilter)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("preScore"), apiVersion, profile.Plugins.PreScore)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("score"), apiVersion, profile.Plugins.Score)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("reserve"), apiVersion, profile.Plugins.Reserve)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("permit"), apiVersion, profile.Plugins.Permit)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("preBind"), apiVersion, profile.Plugins.PreBind)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("bind"), apiVersion, profile.Plugins.Bind)...)
-		errs = append(errs, validatePluginSetForRemovedPlugins(
-			pluginsPath.Child("postBind"), apiVersion, profile.Plugins.PostBind)...)
 	}
 	return errs
 }

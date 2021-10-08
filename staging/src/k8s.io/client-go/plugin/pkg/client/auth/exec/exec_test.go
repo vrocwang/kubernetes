@@ -39,10 +39,10 @@ import (
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/client-go/pkg/apis/clientauthentication"
 	"k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/transport"
+	testingclock "k8s.io/utils/clock/testing"
 )
 
 var (
@@ -980,6 +980,36 @@ func TestRefreshCreds(t *testing.T) {
 			}`,
 			wantCreds: credentials{token: "foo-bar"},
 		},
+		{
+			name: "v1-basic-request",
+			config: api.ExecConfig{
+				APIVersion:      "client.authentication.k8s.io/v1",
+				InteractiveMode: api.IfAvailableExecInteractiveMode,
+			},
+			wantInput: `{
+				"kind": "ExecCredential",
+				"apiVersion": "client.authentication.k8s.io/v1",
+				"spec": {
+					"interactive": false
+				}
+			}`,
+			output: `{
+				"kind": "ExecCredential",
+				"apiVersion": "client.authentication.k8s.io/v1",
+				"status": {
+					"token": "foo-bar"
+				}
+			}`,
+			wantCreds: credentials{token: "foo-bar"},
+		},
+		{
+			name: "v1-with-missing-interactive-mode",
+			config: api.ExecConfig{
+				APIVersion: "client.authentication.k8s.io/v1",
+			},
+			wantErr:       true,
+			wantErrSubstr: `exec plugin cannot support interactive mode: unknown interactiveMode: ""`,
+		},
 	}
 
 	for _, test := range tests {
@@ -1391,7 +1421,7 @@ func TestInstallHintRateLimit(t *testing.T) {
 			a.sometimes.threshold = test.threshold
 			a.sometimes.interval = test.interval
 
-			clock := clock.NewFakeClock(time.Now())
+			clock := testingclock.NewFakeClock(time.Now())
 			a.sometimes.clock = clock
 
 			count := 0

@@ -18,8 +18,12 @@ package queueset
 
 import (
 	"math/rand"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
+	fcrequest "k8s.io/apiserver/pkg/util/flowcontrol/request"
 )
 
 func TestFIFOWithEnqueueDequeueSingleRequest(t *testing.T) {
@@ -146,6 +150,91 @@ func TestFIFOWithRemoveIsIdempotent(t *testing.T) {
 	orderExpected := append(arrival[0:randomIndex], arrival[randomIndex+1:]...)
 	remainingRequests := walkAll(list)
 	verifyOrder(t, orderExpected, remainingRequests)
+}
+
+func TestFIFOQueueWorkEstimate(t *testing.T) {
+	list := newRequestFIFO()
+
+	update := func(we *queueSum, req *request, multiplier int) {
+		we.InitialSeatsSum += multiplier * req.InitialSeats()
+		we.MaxSeatsSum += multiplier * req.MaxSeats()
+		we.AdditionalSeatSecondsSum += SeatSeconds(multiplier) * req.AdditionalSeatSeconds()
+	}
+
+	assert := func(t *testing.T, want, got *queueSum) {
+		if !reflect.DeepEqual(want, got) {
+			t.Errorf("Expected queue work estimate to match, diff: %s", cmp.Diff(want, got))
+		}
+	}
+
+	newRequest := func(initialSeats, finalSeats uint, additionalLatency time.Duration) *request {
+		return &request{workEstimate: fcrequest.WorkEstimate{
+			InitialSeats:      initialSeats,
+			FinalSeats:        finalSeats,
+			AdditionalLatency: additionalLatency,
+		}}
+	}
+	arrival := []*request{
+		newRequest(1, 3, time.Second),
+		newRequest(2, 2, 2*time.Second),
+		newRequest(3, 1, 3*time.Second),
+	}
+	removeFn := make([]removeFromFIFOFunc, 0)
+
+	queueSumExpected := queueSum{}
+	for i := range arrival {
+		req := arrival[i]
+		removeFn = append(removeFn, list.Enqueue(req))
+		update(&queueSumExpected, req, 1)
+
+		workEstimateGot := list.QueueSum()
+		assert(t, &queueSumExpected, &workEstimateGot)
+	}
+
+	// NOTE: the test expects the request and the remove func to be at the same index
+	for i := range removeFn {
+		req := arrival[i]
+		removeFn[i]()
+
+		update(&queueSumExpected, req, -1)
+
+		workEstimateGot := list.QueueSum()
+		assert(t, &queueSumExpected, &workEstimateGot)
+
+		// check idempotency
+		removeFn[i]()
+
+		workEstimateGot = list.QueueSum()
+		assert(t, &queueSumExpected, &workEstimateGot)
+	}
+
+	// Check second type of idempotency: Dequeue + removeFn.
+	for i := range arrival {
+		req := arrival[i]
+		removeFn[i] = list.Enqueue(req)
+
+		update(&queueSumExpected, req, 1)
+	}
+
+	for i := range arrival {
+		// we expect Dequeue to pop the oldest request that should
+		// have the lowest index as well.
+		req := arrival[i]
+
+		if _, ok := list.Dequeue(); !ok {
+			t.Errorf("Unexpected failed dequeue: %d", i)
+		}
+
+		update(&queueSumExpected, req, -1)
+
+		queueSumGot := list.QueueSum()
+		assert(t, &queueSumExpected, &queueSumGot)
+
+		removeFn[i]()
+
+		queueSumGot = list.QueueSum()
+		assert(t, &queueSumExpected, &queueSumGot)
+	}
 }
 
 func TestFIFOWithWalk(t *testing.T) {

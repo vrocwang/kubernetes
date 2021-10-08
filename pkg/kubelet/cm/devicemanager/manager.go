@@ -51,6 +51,8 @@ import (
 	"k8s.io/kubernetes/pkg/util/selinux"
 )
 
+const nodeWithoutTopology = -1
+
 // ActivePodsFunc is a function that returns a list of pods to reconcile.
 type ActivePodsFunc func() []*v1.Pod
 
@@ -108,6 +110,9 @@ type ManagerImpl struct {
 	// devicesToReuse contains devices that can be reused as they have been allocated to
 	// init containers.
 	devicesToReuse PodReusableDevices
+
+	// pendingAdmissionPod contain the pod during the admission phase
+	pendingAdmissionPod *v1.Pod
 }
 
 type endpointInfo struct {
@@ -367,6 +372,10 @@ func (m *ManagerImpl) isVersionCompatibleWithPlugin(versions []string) bool {
 // Allocate is the call that you can use to allocate a set of devices
 // from the registered device plugins.
 func (m *ManagerImpl) Allocate(pod *v1.Pod, container *v1.Container) error {
+	// The pod is during the admission phase. We need to save the pod to avoid it
+	// being cleaned before the admission ended
+	m.setPodPendingAdmission(pod)
+
 	if _, ok := m.devicesToReuse[string(pod.UID)]; !ok {
 		m.devicesToReuse[string(pod.UID)] = make(map[string]sets.String)
 	}
@@ -393,7 +402,6 @@ func (m *ManagerImpl) Allocate(pod *v1.Pod, container *v1.Container) error {
 	}
 	m.podDevices.removeContainerAllocatedResources(string(pod.UID), container.Name, m.devicesToReuse[string(pod.UID)])
 	return nil
-
 }
 
 // UpdatePluginResources updates node resources based on devices already allocated to pods.
@@ -619,14 +627,20 @@ func (m *ManagerImpl) readCheckpoint() error {
 
 // UpdateAllocatedDevices frees any Devices that are bound to terminated pods.
 func (m *ManagerImpl) UpdateAllocatedDevices() {
-	activePods := m.activePods()
 	if !m.sourcesReady.AllReady() {
 		return
 	}
+
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
+
+	activeAndAdmittedPods := m.activePods()
+	if m.pendingAdmissionPod != nil {
+		activeAndAdmittedPods = append(activeAndAdmittedPods, m.pendingAdmissionPod)
+	}
+
 	podsToBeRemoved := m.podDevices.pods()
-	for _, pod := range activePods {
+	for _, pod := range activeAndAdmittedPods {
 		podsToBeRemoved.Delete(string(pod.UID))
 	}
 	if len(podsToBeRemoved) <= 0 {
@@ -767,7 +781,6 @@ func (m *ManagerImpl) filterByAffinity(podUID, contName, resource string, availa
 	// available device does not have any NUMA Nodes associated with it, add it
 	// to a list of NUMA Nodes for the fake NUMANode -1.
 	perNodeDevices := make(map[int]sets.String)
-	nodeWithoutTopology := -1
 	for d := range available {
 		if m.allDevices[resource][d].Topology == nil || len(m.allDevices[resource][d].Topology.Nodes) == 0 {
 			if _, ok := perNodeDevices[nodeWithoutTopology]; !ok {
@@ -936,7 +949,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 		m.mutex.Lock()
 		for dev := range allocDevices {
 			if m.allDevices[resource][dev].Topology == nil || len(m.allDevices[resource][dev].Topology.Nodes) == 0 {
-				allocDevicesWithNUMA[0] = append(allocDevicesWithNUMA[0], dev)
+				allocDevicesWithNUMA[nodeWithoutTopology] = append(allocDevicesWithNUMA[nodeWithoutTopology], dev)
 				continue
 			}
 			for idx := range m.allDevices[resource][dev].Topology.Nodes {
@@ -1090,12 +1103,12 @@ func (m *ManagerImpl) isDevicePluginResource(resource string) bool {
 	return false
 }
 
-// GetAllocatableDevices returns information about all the devices known to the manager
+// GetAllocatableDevices returns information about all the healthy devices known to the manager
 func (m *ManagerImpl) GetAllocatableDevices() ResourceDeviceInstances {
 	m.mutex.Lock()
-	resp := m.allDevices.Clone()
-	m.mutex.Unlock()
-	klog.V(4).InfoS("Known devices", "numDevices", len(resp))
+	defer m.mutex.Unlock()
+	resp := m.allDevices.Filter(m.healthyDevices)
+	klog.V(4).InfoS("GetAllocatableDevices", "known", len(m.allDevices), "allocatable", len(resp))
 	return resp
 }
 
@@ -1116,4 +1129,11 @@ func (m *ManagerImpl) ShouldResetExtendedResourceCapacity() bool {
 		return len(checkpoints) == 0
 	}
 	return false
+}
+
+func (m *ManagerImpl) setPodPendingAdmission(pod *v1.Pod) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	m.pendingAdmissionPod = pod
 }

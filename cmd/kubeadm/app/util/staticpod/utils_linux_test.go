@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 /*
@@ -24,9 +25,10 @@ import (
 	"testing"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/utils/pointer"
+
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
-	"k8s.io/utils/pointer"
 )
 
 type ownerAndPermissions struct {

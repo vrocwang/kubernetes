@@ -42,6 +42,7 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/watch"
@@ -453,14 +454,19 @@ func TestValidateDeletionWithSuggestion(t *testing.T) {
 
 	key, originalPod := testPropogateStore(ctx, t, store, &example.Pod{ObjectMeta: metav1.ObjectMeta{Name: "name"}})
 
-	// Check that validaing fresh object fails.
+	// Check that validaing fresh object fails is called once and fails.
+	validationCalls := 0
 	validationError := fmt.Errorf("validation error")
 	validateNothing := func(_ context.Context, _ runtime.Object) error {
+		validationCalls++
 		return validationError
 	}
 	out := &example.Pod{}
 	if err := store.Delete(ctx, key, out, nil, validateNothing, originalPod); err != validationError {
 		t.Errorf("Unexpected failure during deletion: %v", err)
+	}
+	if validationCalls != 1 {
+		t.Errorf("validate function should have been called once, called %d", validationCalls)
 	}
 
 	// First update, so originalPod is outdated.
@@ -961,12 +967,41 @@ func TestGuaranteedUpdateWithSuggestionAndConflict(t *testing.T) {
 	if updatedPod2.Name != "foo-3" {
 		t.Errorf("unexpected pod name: %q", updatedPod2.Name)
 	}
+
+	// Third, update using a current version as the suggestion.
+	// Return an error and make sure that SimpleUpdate is NOT called a second time,
+	// since the live lookup shows the suggestion was already up to date.
+	attempts := 0
+	updatedPod3 := &example.Pod{}
+	err = store.GuaranteedUpdate(ctx, key, updatedPod3, false, nil,
+		storage.SimpleUpdate(func(obj runtime.Object) (runtime.Object, error) {
+			pod := obj.(*example.Pod)
+			if pod.Name != updatedPod2.Name || pod.ResourceVersion != updatedPod2.ResourceVersion {
+				t.Errorf(
+					"unexpected live object (name=%s, rv=%s), expected name=%s, rv=%s",
+					pod.Name,
+					pod.ResourceVersion,
+					updatedPod2.Name,
+					updatedPod2.ResourceVersion,
+				)
+			}
+			attempts++
+			return nil, fmt.Errorf("validation or admission error")
+		}),
+		updatedPod2,
+	)
+	if err == nil {
+		t.Fatalf("expected error, got none")
+	}
+	if attempts != 1 {
+		t.Errorf("expected 1 attempt, got %d", attempts)
+	}
 }
 
 func TestTransformationFailure(t *testing.T) {
 	client := testserver.RunEtcd(t, nil)
 	codec := apitesting.TestCodec(codecs, examplev1.SchemeGroupVersion)
-	store := newStore(client, codec, newPod, "", &prefixTransformer{prefix: []byte(defaultTestPrefix)}, false, NewDefaultLeaseManagerConfig())
+	store := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, &prefixTransformer{prefix: []byte(defaultTestPrefix)}, false, NewDefaultLeaseManagerConfig())
 	ctx := context.Background()
 
 	preset := []struct {
@@ -1042,8 +1077,8 @@ func TestList(t *testing.T) {
 	client := testserver.RunEtcd(t, nil)
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.RemainingItemCount, true)()
 	codec := apitesting.TestCodec(codecs, examplev1.SchemeGroupVersion)
-	store := newStore(client, codec, newPod, "", &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, NewDefaultLeaseManagerConfig())
-	disablePagingStore := newStore(client, codec, newPod, "", &prefixTransformer{prefix: []byte(defaultTestPrefix)}, false, NewDefaultLeaseManagerConfig())
+	store := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, NewDefaultLeaseManagerConfig())
+	disablePagingStore := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, &prefixTransformer{prefix: []byte(defaultTestPrefix)}, false, NewDefaultLeaseManagerConfig())
 	ctx := context.Background()
 
 	// Setup storage with the following structure:
@@ -1539,7 +1574,7 @@ func TestListContinuation(t *testing.T) {
 	transformer := &prefixTransformer{prefix: []byte(defaultTestPrefix)}
 	recorder := &clientRecorder{KV: etcdClient.KV}
 	etcdClient.KV = recorder
-	store := newStore(etcdClient, codec, newPod, "", transformer, true, NewDefaultLeaseManagerConfig())
+	store := newStore(etcdClient, codec, newPod, "", schema.GroupResource{Resource: "pods"}, transformer, true, NewDefaultLeaseManagerConfig())
 	ctx := context.Background()
 
 	// Setup storage with the following structure:
@@ -1699,7 +1734,7 @@ func TestListContinuationWithFilter(t *testing.T) {
 	transformer := &prefixTransformer{prefix: []byte(defaultTestPrefix)}
 	recorder := &clientRecorder{KV: etcdClient.KV}
 	etcdClient.KV = recorder
-	store := newStore(etcdClient, codec, newPod, "", transformer, true, NewDefaultLeaseManagerConfig())
+	store := newStore(etcdClient, codec, newPod, "", schema.GroupResource{Resource: "pods"}, transformer, true, NewDefaultLeaseManagerConfig())
 	ctx := context.Background()
 
 	preset := []struct {
@@ -1801,7 +1836,7 @@ func TestListContinuationWithFilter(t *testing.T) {
 func TestListInconsistentContinuation(t *testing.T) {
 	client := testserver.RunEtcd(t, nil)
 	codec := apitesting.TestCodec(codecs, examplev1.SchemeGroupVersion)
-	store := newStore(client, codec, newPod, "", &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, NewDefaultLeaseManagerConfig())
+	store := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, NewDefaultLeaseManagerConfig())
 	ctx := context.Background()
 
 	// Setup storage with the following structure:
@@ -1949,7 +1984,7 @@ func testSetup(t *testing.T) (context.Context, *store, *clientv3.Client) {
 	// As 30s is the default timeout for testing in glboal configuration,
 	// we cannot wait longer than that in a single time: change it to 10
 	// for testing purposes. See apimachinery/pkg/util/wait/wait.go
-	store := newStore(client, codec, newPod, "", &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, LeaseManagerConfig{
+	store := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, LeaseManagerConfig{
 		ReuseDurationSeconds: 1,
 		MaxObjectCount:       defaultLeaseMaxObjectCount,
 	})
@@ -1993,7 +2028,7 @@ func TestPrefix(t *testing.T) {
 		"/registry":         "/registry",
 	}
 	for configuredPrefix, effectivePrefix := range testcases {
-		store := newStore(client, codec, nil, configuredPrefix, transformer, true, NewDefaultLeaseManagerConfig())
+		store := newStore(client, codec, nil, configuredPrefix, schema.GroupResource{Resource: "widgets"}, transformer, true, NewDefaultLeaseManagerConfig())
 		if store.pathPrefix != effectivePrefix {
 			t.Errorf("configured prefix of %s, expected effective prefix of %s, got %s", configuredPrefix, effectivePrefix, store.pathPrefix)
 		}
@@ -2158,7 +2193,7 @@ func TestConsistentList(t *testing.T) {
 	transformer := &fancyTransformer{
 		transformer: &prefixTransformer{prefix: []byte(defaultTestPrefix)},
 	}
-	store := newStore(client, codec, newPod, "", transformer, true, NewDefaultLeaseManagerConfig())
+	store := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, transformer, true, NewDefaultLeaseManagerConfig())
 	transformer.store = store
 
 	for i := 0; i < 5; i++ {
@@ -2262,7 +2297,7 @@ func TestCount(t *testing.T) {
 func TestLeaseMaxObjectCount(t *testing.T) {
 	codec := apitesting.TestCodec(codecs, examplev1.SchemeGroupVersion)
 	client := testserver.RunEtcd(t, nil)
-	store := newStore(client, codec, newPod, "", &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, LeaseManagerConfig{
+	store := newStore(client, codec, newPod, "", schema.GroupResource{Resource: "pods"}, &prefixTransformer{prefix: []byte(defaultTestPrefix)}, true, LeaseManagerConfig{
 		ReuseDurationSeconds: defaultLeaseReuseDurationSeconds,
 		MaxObjectCount:       2,
 	})

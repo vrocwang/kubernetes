@@ -756,6 +756,10 @@ var _ = SIGDescribe("StatefulSet", func() {
 			}
 			pod, err = f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(context.TODO(), pod, metav1.CreateOptions{})
 			framework.ExpectNoError(err)
+			ginkgo.By("Waiting until pod " + podName + " will start running in namespace " + f.Namespace.Name)
+			if err := e2epod.WaitForPodNameRunningInNamespace(f.ClientSet, podName, f.Namespace.Name); err != nil {
+				framework.Failf("Pod %v did not start running: %v", podName, err)
+			}
 
 			ginkgo.By("Creating statefulset with conflicting port in namespace " + f.Namespace.Name)
 			ss := e2estatefulset.NewStatefulSet(ssName, f.Namespace.Name, headlessSvcName, 1, nil, nil, labels)
@@ -764,11 +768,6 @@ var _ = SIGDescribe("StatefulSet", func() {
 			ss.Spec.Template.Spec.NodeName = node.Name
 			_, err = f.ClientSet.AppsV1().StatefulSets(f.Namespace.Name).Create(context.TODO(), ss, metav1.CreateOptions{})
 			framework.ExpectNoError(err)
-
-			ginkgo.By("Waiting until pod " + podName + " will start running in namespace " + f.Namespace.Name)
-			if err := e2epod.WaitForPodNameRunningInNamespace(f.ClientSet, podName, f.Namespace.Name); err != nil {
-				framework.Failf("Pod %v did not start running: %v", podName, err)
-			}
 
 			var initialStatefulPodUID types.UID
 			ginkgo.By("Waiting until stateful pod " + statefulPodName + " will be recreated and deleted at least once in namespace " + f.Namespace.Name)
@@ -892,7 +891,15 @@ var _ = SIGDescribe("StatefulSet", func() {
 			framework.ExpectEqual(*(ss.Spec.Replicas), int32(4), "statefulset should have 4 replicas")
 		})
 
-		ginkgo.It("should list, patch and delete a collection of StatefulSets", func() {
+		/*
+			Release: v1.22
+			Testname: StatefulSet, list, patch and delete a collection of StatefulSets
+			Description: When a StatefulSet is created it MUST succeed. It
+			MUST succeed when listing StatefulSets via a label selector. It
+			MUST succeed when patching a StatefulSet. It MUST succeed when
+			deleting the StatefulSet via deleteCollection.
+		*/
+		framework.ConformanceIt("should list, patch and delete a collection of StatefulSets", func() {
 
 			ssPatchReplicas := int32(2)
 			ssPatchImage := imageutils.GetE2EImage(imageutils.Pause)
@@ -954,7 +961,14 @@ var _ = SIGDescribe("StatefulSet", func() {
 			framework.ExpectEqual(len(ssList.Items), 0, "filtered list should have no Statefulsets")
 		})
 
-		ginkgo.It("should validate Statefulset Status endpoints", func() {
+		/*
+			Release: v1.22
+			Testname: StatefulSet, status sub-resource
+			Description: When a StatefulSet is created it MUST succeed.
+			Attempt to read, update and patch its status sub-resource; all
+			mutating sub-resource operations MUST be visible to subsequent reads.
+		*/
+		framework.ConformanceIt("should validate Statefulset Status endpoints", func() {
 			ssClient := c.AppsV1().StatefulSets(ns)
 			labelSelector := "e2e=testing"
 
@@ -1126,7 +1140,7 @@ var _ = SIGDescribe("StatefulSet", func() {
 	})
 	// Make sure minReadySeconds is honored
 	// Don't mark it as conformance yet
-	ginkgo.It("MinReadySeconds should be honored when enabled [Feature:StatefulSetMinReadySeconds] [alpha]", func() {
+	ginkgo.It("MinReadySeconds should be honored when enabled", func() {
 		ssName := "test-ss"
 		headlessSvcName := "test"
 		// Define StatefulSet Labels
@@ -1139,6 +1153,50 @@ var _ = SIGDescribe("StatefulSet", func() {
 		ss, err := c.AppsV1().StatefulSets(ns).Create(context.TODO(), ss, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 		e2estatefulset.WaitForStatusAvailableReplicas(c, ss, 1)
+	})
+
+	ginkgo.It("AvailableReplicas should get updated accordingly when MinReadySeconds is enabled", func() {
+		ssName := "test-ss"
+		headlessSvcName := "test"
+		// Define StatefulSet Labels
+		ssPodLabels := map[string]string{
+			"name": "sample-pod",
+			"pod":  WebserverImageName,
+		}
+		ss := e2estatefulset.NewStatefulSet(ssName, ns, headlessSvcName, 2, nil, nil, ssPodLabels)
+		ss.Spec.MinReadySeconds = 30
+		setHTTPProbe(ss)
+		ss, err := c.AppsV1().StatefulSets(ns).Create(context.TODO(), ss, metav1.CreateOptions{})
+		framework.ExpectNoError(err)
+		e2estatefulset.WaitForStatusAvailableReplicas(c, ss, 0)
+		// let's check that the availableReplicas have still not updated
+		time.Sleep(5 * time.Second)
+		ss, err = c.AppsV1().StatefulSets(ns).Get(context.TODO(), ss.Name, metav1.GetOptions{})
+		framework.ExpectNoError(err)
+		if ss.Status.AvailableReplicas != 0 {
+			framework.Failf("invalid number of availableReplicas: expected=%v received=%v", 0, ss.Status.AvailableReplicas)
+		}
+		e2estatefulset.WaitForStatusAvailableReplicas(c, ss, 2)
+
+		ss, err = updateStatefulSetWithRetries(c, ns, ss.Name, func(update *appsv1.StatefulSet) {
+			update.Spec.MinReadySeconds = 3600
+		})
+		framework.ExpectNoError(err)
+		// We don't expect replicas to be updated till 1 hour, so the availableReplicas should be 0
+		e2estatefulset.WaitForStatusAvailableReplicas(c, ss, 0)
+
+		ss, err = updateStatefulSetWithRetries(c, ns, ss.Name, func(update *appsv1.StatefulSet) {
+			update.Spec.MinReadySeconds = 0
+		})
+		framework.ExpectNoError(err)
+		e2estatefulset.WaitForStatusAvailableReplicas(c, ss, 2)
+
+		ginkgo.By("check availableReplicas are shown in status")
+		out, err := framework.RunKubectl(ns, "get", "statefulset", ss.Name, "-o=yaml")
+		framework.ExpectNoError(err)
+		if !strings.Contains(out, "availableReplicas: 2") {
+			framework.Failf("invalid number of availableReplicas: expected=%v received=%v", 2, out)
+		}
 	})
 })
 

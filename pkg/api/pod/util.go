@@ -21,11 +21,9 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/helper"
-	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	apivalidation "k8s.io/kubernetes/pkg/apis/core/validation"
 	"k8s.io/kubernetes/pkg/features"
 )
@@ -331,19 +329,6 @@ func usesHugePagesInProjectedEnv(item api.Container) bool {
 	return false
 }
 
-// usesMultipleHugePageResources returns true if the pod spec uses more than
-// one size of hugepage
-func usesMultipleHugePageResources(podSpec *api.PodSpec) bool {
-	hugePageResources := sets.NewString()
-	resourceSet := helper.ToPodResourcesSet(podSpec)
-	for resourceStr := range resourceSet {
-		if v1helper.IsHugePageResourceName(v1.ResourceName(resourceStr)) {
-			hugePageResources.Insert(resourceStr)
-		}
-	}
-	return len(hugePageResources) > 1
-}
-
 func checkContainerUseIndivisibleHugePagesValues(container api.Container) bool {
 	for resourceName, quantity := range container.Resources.Limits {
 		if helper.IsHugePageResourceName(resourceName) {
@@ -425,8 +410,6 @@ func haveSameExpandedDNSConfig(podSpec, oldPodSpec *api.PodSpec) bool {
 func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, podMeta, oldPodMeta *metav1.ObjectMeta) apivalidation.PodValidationOptions {
 	// default pod validation options based on feature gate
 	opts := apivalidation.PodValidationOptions{
-		// Allow multiple huge pages on pod create if feature is enabled
-		AllowMultipleHugePageResources: utilfeature.DefaultFeatureGate.Enabled(features.HugePageStorageMediumSize),
 		// Allow pod spec to use hugepages in downward API if feature is enabled
 		AllowDownwardAPIHugePages:   utilfeature.DefaultFeatureGate.Enabled(features.DownwardAPIHugePages),
 		AllowInvalidPodDeletionCost: !utilfeature.DefaultFeatureGate.Enabled(features.PodDeletionCost),
@@ -438,8 +421,6 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 	}
 
 	if oldPodSpec != nil {
-		// if old spec used multiple huge page sizes, we must allow it
-		opts.AllowMultipleHugePageResources = opts.AllowMultipleHugePageResources || usesMultipleHugePageResources(oldPodSpec)
 		// if old spec used hugepages in downward api, we must allow it
 		opts.AllowDownwardAPIHugePages = opts.AllowDownwardAPIHugePages || usesHugePagesInProjectedVolume(oldPodSpec)
 		// determine if any container is using hugepages in env var
@@ -509,32 +490,16 @@ func DropDisabledPodFields(pod, oldPod *api.Pod) {
 		podAnnotations    map[string]string
 		oldPodSpec        *api.PodSpec
 		oldPodAnnotations map[string]string
-		podStatus         *api.PodStatus
-		oldPodStatus      *api.PodStatus
 	)
 	if pod != nil {
 		podSpec = &pod.Spec
 		podAnnotations = pod.Annotations
-		podStatus = &pod.Status
 	}
 	if oldPod != nil {
 		oldPodSpec = &oldPod.Spec
 		oldPodAnnotations = oldPod.Annotations
-		oldPodStatus = &oldPod.Status
 	}
 	dropDisabledFields(podSpec, podAnnotations, oldPodSpec, oldPodAnnotations)
-	dropPodStatusDisabledFields(podStatus, oldPodStatus)
-}
-
-// dropPodStatusDisabledFields removes disabled fields from the pod status
-func dropPodStatusDisabledFields(podStatus *api.PodStatus, oldPodStatus *api.PodStatus) {
-	// trim PodIPs down to only one entry (non dual stack).
-	if !utilfeature.DefaultFeatureGate.Enabled(features.IPv6DualStack) &&
-		!multiplePodIPsInUse(oldPodStatus) {
-		if len(podStatus.PodIPs) != 0 {
-			podStatus.PodIPs = podStatus.PodIPs[0:1]
-		}
-	}
 }
 
 // dropDisabledFields removes disabled fields from the pod metadata and spec.
@@ -563,27 +528,8 @@ func dropDisabledFields(
 		}
 	}
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.VolumeSubpath) && !subpathInUse(oldPodSpec) {
-		// drop subpath from the pod if the feature is disabled and the old spec did not specify subpaths
-		VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
-			for i := range c.VolumeMounts {
-				c.VolumeMounts[i].SubPath = ""
-			}
-			return true
-		})
-	}
 	if !utilfeature.DefaultFeatureGate.Enabled(features.EphemeralContainers) && !ephemeralContainersInUse(oldPodSpec) {
 		podSpec.EphemeralContainers = nil
-	}
-
-	if !utilfeature.DefaultFeatureGate.Enabled(features.VolumeSubpath) && !subpathExprInUse(oldPodSpec) {
-		// drop subpath env expansion from the pod if subpath feature is disabled and the old spec did not specify subpath env expansion
-		VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
-			for i := range c.VolumeMounts {
-				c.VolumeMounts[i].SubPathExpr = ""
-			}
-			return true
-		})
 	}
 
 	if !utilfeature.DefaultFeatureGate.Enabled(features.ProbeTerminationGracePeriod) && !probeGracePeriodInUse(oldPodSpec) {
@@ -747,26 +693,6 @@ func fsGroupPolicyInUse(podSpec *api.PodSpec) bool {
 	return false
 }
 
-// subpathInUse returns true if the pod spec is non-nil and has a volume mount that makes use of the subPath feature
-func subpathInUse(podSpec *api.PodSpec) bool {
-	if podSpec == nil {
-		return false
-	}
-
-	var inUse bool
-	VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
-		for i := range c.VolumeMounts {
-			if len(c.VolumeMounts[i].SubPath) > 0 {
-				inUse = true
-				return false
-			}
-		}
-		return true
-	})
-
-	return inUse
-}
-
 // overheadInUse returns true if the pod spec is non-nil and has Overhead set
 func overheadInUse(podSpec *api.PodSpec) bool {
 	if podSpec == nil {
@@ -835,26 +761,6 @@ func emptyDirSizeLimitInUse(podSpec *api.PodSpec) bool {
 	return false
 }
 
-// subpathExprInUse returns true if the pod spec is non-nil and has a volume mount that makes use of the subPathExpr feature
-func subpathExprInUse(podSpec *api.PodSpec) bool {
-	if podSpec == nil {
-		return false
-	}
-
-	var inUse bool
-	VisitContainers(podSpec, AllContainers, func(c *api.Container, containerType ContainerType) bool {
-		for i := range c.VolumeMounts {
-			if len(c.VolumeMounts[i].SubPathExpr) > 0 {
-				inUse = true
-				return false
-			}
-		}
-		return true
-	})
-
-	return inUse
-}
-
 // probeGracePeriodInUse returns true if the pod spec is non-nil and has a probe that makes use
 // of the probe-level terminationGracePeriodSeconds feature
 func probeGracePeriodInUse(podSpec *api.PodSpec) bool {
@@ -898,17 +804,6 @@ func ephemeralInUse(podSpec *api.PodSpec) bool {
 		if podSpec.Volumes[i].Ephemeral != nil {
 			return true
 		}
-	}
-	return false
-}
-
-// podPriorityInUse returns true if status is not nil and number of PodIPs is greater than one
-func multiplePodIPsInUse(podStatus *api.PodStatus) bool {
-	if podStatus == nil {
-		return false
-	}
-	if len(podStatus.PodIPs) > 1 {
-		return true
 	}
 	return false
 }

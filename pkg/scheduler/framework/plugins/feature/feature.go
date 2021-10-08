@@ -23,4 +23,8 @@ type Features struct {
 	EnablePodAffinityNamespaceSelector bool
 	EnablePodDisruptionBudget          bool
 	EnablePodOverhead                  bool
+	EnableReadWriteOncePod             bool
+	EnableVolumeCapacityPriority       bool
+	EnableCSIStorageCapacity           bool
+	EnableGenericEphemeralVolume       bool
 }

@@ -36,8 +36,10 @@ const (
 
 	// owner: @jiahuif
 	// alpha: v1.21
+	// beta:  v1.22
 	//
 	// Enables Leader Migration for kube-controller-manager and cloud-controller-manager
+	// copied and sync'ed from k8s.io/kubernetes/pkg/features/kube_features.go
 	ControllerManagerLeaderMigration featuregate.Feature = "ControllerManagerLeaderMigration"
 )
 
@@ -48,6 +50,6 @@ func SetupCurrentKubernetesSpecificFeatureGates(featuregates featuregate.Mutable
 // cloudPublicFeatureGates consists of cloud-specific feature keys.
 // To add a new feature, define a key for it at k8s.io/api/pkg/features and add it here.
 var cloudPublicFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
-	IPv6DualStack:                    {Default: true, PreRelease: featuregate.Beta},
-	ControllerManagerLeaderMigration: {Default: false, PreRelease: featuregate.Alpha},
+	IPv6DualStack:                    {Default: true, PreRelease: featuregate.GA, LockToDefault: true},
+	ControllerManagerLeaderMigration: {Default: true, PreRelease: featuregate.Beta},
 }

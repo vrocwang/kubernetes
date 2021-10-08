@@ -32,6 +32,7 @@ var PluginsV1beta1 = &config.Plugins{
 		Enabled: []config.Plugin{
 			{Name: names.NodeResourcesFit},
 			{Name: names.NodePorts},
+			{Name: names.VolumeRestrictions},
 			{Name: names.PodTopologySpread},
 			{Name: names.InterPodAffinity},
 			{Name: names.VolumeBinding},
@@ -102,6 +103,61 @@ var PluginsV1beta1 = &config.Plugins{
 	},
 }
 
+// PluginConfigsV1beta1 default plugin configurations. This could get versioned, but since
+// all available versions produce the same defaults, we just have one for now.
+var PluginConfigsV1beta1 = []config.PluginConfig{
+	{
+		Name: "DefaultPreemption",
+		Args: &config.DefaultPreemptionArgs{
+			MinCandidateNodesPercentage: 10,
+			MinCandidateNodesAbsolute:   100,
+		},
+	},
+	{
+		Name: "InterPodAffinity",
+		Args: &config.InterPodAffinityArgs{
+			HardPodAffinityWeight: 1,
+		},
+	},
+	{
+		Name: "NodeAffinity",
+		Args: &config.NodeAffinityArgs{},
+	},
+	{
+		Name: "NodeResourcesBalancedAllocation",
+		Args: &config.NodeResourcesBalancedAllocationArgs{
+			Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+		},
+	},
+	{
+		Name: "NodeResourcesFit",
+		Args: &config.NodeResourcesFitArgs{
+			ScoringStrategy: &config.ScoringStrategy{
+				Type:      config.LeastAllocated,
+				Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+			},
+		},
+	},
+	{
+		Name: "NodeResourcesLeastAllocated",
+		Args: &config.NodeResourcesLeastAllocatedArgs{
+			Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+		},
+	},
+	{
+		Name: "PodTopologySpread",
+		Args: &config.PodTopologySpreadArgs{
+			DefaultingType: config.SystemDefaulting,
+		},
+	},
+	{
+		Name: "VolumeBinding",
+		Args: &config.VolumeBindingArgs{
+			BindTimeoutSeconds: 600,
+		},
+	},
+}
+
 // PluginsV1beta2 default set of v1beta2 plugins.
 var PluginsV1beta2 = &config.Plugins{
 	QueueSort: config.PluginSet{
@@ -113,6 +169,7 @@ var PluginsV1beta2 = &config.Plugins{
 		Enabled: []config.Plugin{
 			{Name: names.NodeResourcesFit},
 			{Name: names.NodePorts},
+			{Name: names.VolumeRestrictions},
 			{Name: names.PodTopologySpread},
 			{Name: names.InterPodAffinity},
 			{Name: names.VolumeBinding},
@@ -156,7 +213,7 @@ var PluginsV1beta2 = &config.Plugins{
 			{Name: names.NodeResourcesBalancedAllocation, Weight: 1},
 			{Name: names.ImageLocality, Weight: 1},
 			{Name: names.InterPodAffinity, Weight: 1},
-			{Name: names.NodeResourcesLeastAllocated, Weight: 1},
+			{Name: names.NodeResourcesFit, Weight: 1},
 			{Name: names.NodeAffinity, Weight: 1},
 			// Weight is doubled because:
 			// - This is a score coming from user preference.
@@ -182,9 +239,9 @@ var PluginsV1beta2 = &config.Plugins{
 	},
 }
 
-// PluginConfigs default plugin configurations. This could get versioned, but since
+// PluginConfigsV1beta2 default plugin configurations. This could get versioned, but since
 // all available versions produce the same defaults, we just have one for now.
-var PluginConfigs = []config.PluginConfig{
+var PluginConfigsV1beta2 = []config.PluginConfig{
 	{
 		Name: "DefaultPreemption",
 		Args: &config.DefaultPreemptionArgs{
@@ -203,13 +260,155 @@ var PluginConfigs = []config.PluginConfig{
 		Args: &config.NodeAffinityArgs{},
 	},
 	{
-		Name: "NodeResourcesFit",
-		Args: &config.NodeResourcesFitArgs{},
+		Name: "NodeResourcesBalancedAllocation",
+		Args: &config.NodeResourcesBalancedAllocationArgs{
+			Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+		},
 	},
 	{
-		Name: "NodeResourcesLeastAllocated",
-		Args: &config.NodeResourcesLeastAllocatedArgs{
+		Name: "NodeResourcesFit",
+		Args: &config.NodeResourcesFitArgs{
+			ScoringStrategy: &config.ScoringStrategy{
+				Type:      config.LeastAllocated,
+				Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+			},
+		},
+	},
+	{
+		Name: "PodTopologySpread",
+		Args: &config.PodTopologySpreadArgs{
+			DefaultingType: config.SystemDefaulting,
+		},
+	},
+	{
+		Name: "VolumeBinding",
+		Args: &config.VolumeBindingArgs{
+			BindTimeoutSeconds: 600,
+		},
+	},
+}
+
+// PluginsV1beta3 default set of v1beta3 plugins.
+var PluginsV1beta3 = &config.Plugins{
+	QueueSort: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.PrioritySort},
+		},
+	},
+	PreFilter: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.NodeResourcesFit},
+			{Name: names.NodePorts},
+			{Name: names.VolumeRestrictions},
+			{Name: names.PodTopologySpread},
+			{Name: names.InterPodAffinity},
+			{Name: names.VolumeBinding},
+			{Name: names.NodeAffinity},
+		},
+	},
+	Filter: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.NodeUnschedulable},
+			{Name: names.NodeName},
+			{Name: names.TaintToleration},
+			{Name: names.NodeAffinity},
+			{Name: names.NodePorts},
+			{Name: names.NodeResourcesFit},
+			{Name: names.VolumeRestrictions},
+			{Name: names.EBSLimits},
+			{Name: names.GCEPDLimits},
+			{Name: names.NodeVolumeLimits},
+			{Name: names.AzureDiskLimits},
+			{Name: names.VolumeBinding},
+			{Name: names.VolumeZone},
+			{Name: names.PodTopologySpread},
+			{Name: names.InterPodAffinity},
+		},
+	},
+	PostFilter: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.DefaultPreemption},
+		},
+	},
+	PreScore: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.InterPodAffinity},
+			{Name: names.PodTopologySpread},
+			{Name: names.TaintToleration},
+			{Name: names.NodeAffinity},
+		},
+	},
+	Score: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.NodeResourcesBalancedAllocation, Weight: 1},
+			{Name: names.ImageLocality, Weight: 1},
+			{Name: names.NodeResourcesFit, Weight: 1},
+			// Weight is doubled because:
+			// - This is a score coming from user preference.
+			{Name: names.InterPodAffinity, Weight: 2},
+			// Weight is doubled because:
+			// - This is a score coming from user preference.
+			{Name: names.NodeAffinity, Weight: 2},
+			// Weight is doubled because:
+			// - This is a score coming from user preference.
+			// - It makes its signal comparable to NodeResourcesLeastAllocated.
+			{Name: names.PodTopologySpread, Weight: 2},
+			// Weight is tripled because:
+			// - This is a score coming from user preference.
+			// - Usage of node tainting to group nodes in the cluster is increasing becoming a use-case
+			//	 for many user workloads
+			{Name: names.TaintToleration, Weight: 3},
+		},
+	},
+	Reserve: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.VolumeBinding},
+		},
+	},
+	PreBind: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.VolumeBinding},
+		},
+	},
+	Bind: config.PluginSet{
+		Enabled: []config.Plugin{
+			{Name: names.DefaultBinder},
+		},
+	},
+}
+
+// PluginConfigsV1beta3 default plugin configurations.
+var PluginConfigsV1beta3 = []config.PluginConfig{
+	{
+		Name: "DefaultPreemption",
+		Args: &config.DefaultPreemptionArgs{
+			MinCandidateNodesPercentage: 10,
+			MinCandidateNodesAbsolute:   100,
+		},
+	},
+	{
+		Name: "InterPodAffinity",
+		Args: &config.InterPodAffinityArgs{
+			HardPodAffinityWeight: 1,
+		},
+	},
+	{
+		Name: "NodeAffinity",
+		Args: &config.NodeAffinityArgs{},
+	},
+	{
+		Name: "NodeResourcesBalancedAllocation",
+		Args: &config.NodeResourcesBalancedAllocationArgs{
 			Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+		},
+	},
+	{
+		Name: "NodeResourcesFit",
+		Args: &config.NodeResourcesFitArgs{
+			ScoringStrategy: &config.ScoringStrategy{
+				Type:      config.LeastAllocated,
+				Resources: []config.ResourceSpec{{Name: "cpu", Weight: 1}, {Name: "memory", Weight: 1}},
+			},
 		},
 	},
 	{

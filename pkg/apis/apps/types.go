@@ -205,9 +205,7 @@ type StatefulSetStatus struct {
 	Conditions []StatefulSetCondition
 
 	// Total number of available pods (ready for at least minReadySeconds) targeted by this statefulset.
-	// This is an alpha field and requires enabling StatefulSetMinReadySeconds feature gate.
-	// Remove omitempty when graduating to beta
-	// +optional
+	// This is a beta field and requires enabling StatefulSetMinReadySeconds feature gate.
 	AvailableReplicas int32
 }
 
@@ -545,7 +543,7 @@ type RollingUpdateDaemonSet struct {
 	// The maximum number of DaemonSet pods that can be unavailable during the
 	// update. Value can be an absolute number (ex: 5) or a percentage of total
 	// number of DaemonSet pods at the start of the update (ex: 10%). Absolute
-	// number is calculated from percentage by rounding down to a minimum of one.
+	// number is calculated from percentage by rounding up.
 	// This cannot be 0 if MaxSurge is 0
 	// Default value is 1.
 	// Example: when this is set to 30%, at most 30% of the total number of nodes
@@ -572,7 +570,7 @@ type RollingUpdateDaemonSet struct {
 	// pod is available (Ready for at least minReadySeconds) the old DaemonSet pod
 	// on that node is marked deleted. If the old pod becomes unavailable for any
 	// reason (Ready transitions to false, is evicted, or is drained) an updated
-	// pod is immediatedly created on that node without considering surge limits.
+	// pod is immediately created on that node without considering surge limits.
 	// Allowing surge implies the possibility that the resources consumed by the
 	// daemonset on any given node can double if the readiness check fails, and
 	// so resource intensive daemonsets should take into account that they may

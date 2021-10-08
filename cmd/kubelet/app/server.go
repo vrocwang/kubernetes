@@ -103,7 +103,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume/util/hostutil"
 	"k8s.io/kubernetes/pkg/volume/util/subpath"
 	"k8s.io/utils/exec"
-	utilnet "k8s.io/utils/net"
+	netutils "k8s.io/utils/net"
 )
 
 const (
@@ -258,6 +258,9 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 					}
 				}
 			}
+
+			// Config and flags parsed, now we can initialize logging.
+			logs.InitLogs()
 
 			// construct a KubeletServer from kubeletFlags and kubeletConfig
 			kubeletServer := &options.KubeletServer{
@@ -522,6 +525,11 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 		return err
 	}
 
+	// Warn if MemoryQoS enabled with cgroups v1
+	if utilfeature.DefaultFeatureGate.Enabled(features.MemoryQoS) &&
+		!isCgroup2UnifiedMode() {
+		klog.InfoS("Warning: MemoryQoS feature only works with cgroups v2 on Linux, but enabled with cgroups v1")
+	}
 	// Obtain Kubelet Lock File
 	if s.ExitOnLockContention && s.LockFilePath == "" {
 		return errors.New("cannot exit on lock file contention: no lock file specified")
@@ -727,6 +735,16 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 
 		devicePluginEnabled := utilfeature.DefaultFeatureGate.Enabled(features.DevicePlugins)
 
+		var cpuManagerPolicyOptions map[string]string
+		if utilfeature.DefaultFeatureGate.Enabled(features.CPUManager) {
+			if utilfeature.DefaultFeatureGate.Enabled(features.CPUManagerPolicyOptions) {
+				cpuManagerPolicyOptions = s.CPUManagerPolicyOptions
+			} else if s.CPUManagerPolicyOptions != nil {
+				return fmt.Errorf("CPU Manager policy options %v require feature gates %q, %q enabled",
+					s.CPUManagerPolicyOptions, features.CPUManager, features.CPUManagerPolicyOptions)
+			}
+		}
+
 		kubeDeps.ContainerManager, err = cm.NewContainerManager(
 			kubeDeps.Mounter,
 			kubeDeps.CAdvisorInterface,
@@ -751,6 +769,7 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 				},
 				QOSReserved:                             *experimentalQOSReserved,
 				ExperimentalCPUManagerPolicy:            s.CPUManagerPolicy,
+				ExperimentalCPUManagerPolicyOptions:     cpuManagerPolicyOptions,
 				ExperimentalCPUManagerReconcilePeriod:   s.CPUManagerReconcilePeriod.Duration,
 				ExperimentalMemoryManagerPolicy:         s.MemoryManagerPolicy,
 				ExperimentalMemoryManagerReservedMemory: s.ReservedMemory,
@@ -876,7 +895,7 @@ func buildKubeletClientConfig(ctx context.Context, s *options.KubeletServer, nod
 			},
 			func() float64 {
 				if c := clientCertificateManager.Current(); c != nil && c.Leaf != nil {
-					return math.Trunc(c.Leaf.NotAfter.Sub(time.Now()).Seconds())
+					return math.Trunc(time.Until(c.Leaf.NotAfter).Seconds())
 				}
 				return math.Inf(1)
 			},
@@ -1106,7 +1125,7 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 	var nodeIPs []net.IP
 	if kubeServer.NodeIP != "" {
 		for _, ip := range strings.Split(kubeServer.NodeIP, ",") {
-			parsedNodeIP := net.ParseIP(strings.TrimSpace(ip))
+			parsedNodeIP := netutils.ParseIPSloppy(strings.TrimSpace(ip))
 			if parsedNodeIP == nil {
 				klog.InfoS("Could not parse --node-ip ignoring", "IP", ip)
 			} else {
@@ -1114,9 +1133,8 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 			}
 		}
 	}
-	if !utilfeature.DefaultFeatureGate.Enabled(features.IPv6DualStack) && len(nodeIPs) > 1 {
-		return fmt.Errorf("dual-stack --node-ip %q not supported in a single-stack cluster", kubeServer.NodeIP)
-	} else if len(nodeIPs) > 2 || (len(nodeIPs) == 2 && utilnet.IsIPv6(nodeIPs[0]) == utilnet.IsIPv6(nodeIPs[1])) {
+
+	if len(nodeIPs) > 2 || (len(nodeIPs) == 2 && netutils.IsIPv6(nodeIPs[0]) == netutils.IsIPv6(nodeIPs[1])) {
 		return fmt.Errorf("bad --node-ip %q; must contain either a single IP or a dual-stack pair of IPs", kubeServer.NodeIP)
 	} else if len(nodeIPs) == 2 && kubeServer.CloudProvider != "" {
 		return fmt.Errorf("dual-stack --node-ip %q not supported when using a cloud provider", kubeServer.NodeIP)
@@ -1167,7 +1185,6 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 		kubeServer.RegisterSchedulable,
 		kubeServer.KeepTerminatedPodVolumes,
 		kubeServer.NodeLabels,
-		kubeServer.SeccompProfileRoot,
 		kubeServer.NodeStatusMaxImages,
 		kubeServer.KubeletFlags.SeccompDefault || kubeServer.KubeletConfiguration.SeccompDefault,
 	)
@@ -1208,7 +1225,7 @@ func startKubelet(k kubelet.Bootstrap, podCfg *config.PodConfig, kubeCfg *kubele
 		go k.ListenAndServe(kubeCfg, kubeDeps.TLSOptions, kubeDeps.Auth)
 	}
 	if kubeCfg.ReadOnlyPort > 0 {
-		go k.ListenAndServeReadOnly(net.ParseIP(kubeCfg.Address), uint(kubeCfg.ReadOnlyPort))
+		go k.ListenAndServeReadOnly(netutils.ParseIPSloppy(kubeCfg.Address), uint(kubeCfg.ReadOnlyPort))
 	}
 	if utilfeature.DefaultFeatureGate.Enabled(features.KubeletPodResources) {
 		go k.ListenAndServePodResources()
@@ -1243,7 +1260,6 @@ func createAndInitKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	registerSchedulable bool,
 	keepTerminatedPodVolumes bool,
 	nodeLabels map[string]string,
-	seccompProfileRoot string,
 	nodeStatusMaxImages int32,
 	seccompDefault bool,
 ) (k kubelet.Bootstrap, err error) {
@@ -1278,7 +1294,6 @@ func createAndInitKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		registerSchedulable,
 		keepTerminatedPodVolumes,
 		nodeLabels,
-		seccompProfileRoot,
 		nodeStatusMaxImages,
 		seccompDefault,
 	)

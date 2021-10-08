@@ -90,50 +90,48 @@ type GetOptions struct {
 
 var (
 	getLong = templates.LongDesc(i18n.T(`
-		Display one or many resources
+		Display one or many resources.
 
 		Prints a table of the most important information about the specified resources.
 		You can filter the list using a label selector and the --selector flag. If the
 		desired resource type is namespaced you will only see results in your current
 		namespace unless you pass --all-namespaces.
 
-		Uninitialized objects are not shown unless --include-uninitialized is passed.
-
 		By specifying the output as 'template' and providing a Go template as the value
 		of the --template flag, you can filter the attributes of the fetched resources.`))
 
 	getExample = templates.Examples(i18n.T(`
-		# List all pods in ps output format.
+		# List all pods in ps output format
 		kubectl get pods
 
-		# List all pods in ps output format with more information (such as node name).
+		# List all pods in ps output format with more information (such as node name)
 		kubectl get pods -o wide
 
-		# List a single replication controller with specified NAME in ps output format.
+		# List a single replication controller with specified NAME in ps output format
 		kubectl get replicationcontroller web
 
-		# List deployments in JSON output format, in the "v1" version of the "apps" API group:
+		# List deployments in JSON output format, in the "v1" version of the "apps" API group
 		kubectl get deployments.v1.apps -o json
 
-		# List a single pod in JSON output format.
+		# List a single pod in JSON output format
 		kubectl get -o json pod web-pod-13je7
 
-		# List a pod identified by type and name specified in "pod.yaml" in JSON output format.
+		# List a pod identified by type and name specified in "pod.yaml" in JSON output format
 		kubectl get -f pod.yaml -o json
 
-		# List resources from a directory with kustomization.yaml - e.g. dir/kustomization.yaml.
+		# List resources from a directory with kustomization.yaml - e.g. dir/kustomization.yaml
 		kubectl get -k dir/
 
-		# Return only the phase value of the specified pod.
+		# Return only the phase value of the specified pod
 		kubectl get -o template pod/web-pod-13je7 --template={{.status.phase}}
 
-		# List resource information in custom columns.
+		# List resource information in custom columns
 		kubectl get pod test-pod -o custom-columns=CONTAINER:.spec.containers[0].name,IMAGE:.spec.containers[0].image
 
-		# List all replication controllers and services together in ps output format.
+		# List all replication controllers and services together in ps output format
 		kubectl get rc,services
 
-		# List one or more resources by their type and names.
+		# List one or more resources by their type and names
 		kubectl get rc/web service/frontend pods/web-pod-13je7`))
 )
 
@@ -185,7 +183,7 @@ func NewCmdGet(parent string, f cmdutil.Factory, streams genericclioptions.IOStr
 	o.PrintFlags.AddFlags(cmd)
 
 	cmd.Flags().StringVar(&o.Raw, "raw", o.Raw, "Raw URI to request from the server.  Uses the transport specified by the kubeconfig file.")
-	cmd.Flags().BoolVarP(&o.Watch, "watch", "w", o.Watch, "After listing/getting the requested object, watch for changes. Uninitialized objects are excluded if no object name is provided.")
+	cmd.Flags().BoolVarP(&o.Watch, "watch", "w", o.Watch, "After listing/getting the requested object, watch for changes.")
 	cmd.Flags().BoolVar(&o.WatchOnly, "watch-only", o.WatchOnly, "Watch for changes to the requested object(s), without listing/getting first.")
 	cmd.Flags().BoolVar(&o.OutputWatchEvents, "output-watch-events", o.OutputWatchEvents, "Output watch event objects when --watch or --watch-only is used. Existing objects are output as initial ADDED events.")
 	cmd.Flags().BoolVar(&o.IgnoreNotFound, "ignore-not-found", o.IgnoreNotFound, "If the requested object does not exist the command will return exit code 0.")

@@ -108,11 +108,6 @@ func (sched *Scheduler) deleteNodeFromCache(obj interface{}) {
 		return
 	}
 	klog.V(3).InfoS("Delete event for node", "node", klog.KObj(node))
-	// NOTE: Updates must be written to scheduler cache before invalidating
-	// equivalence cache, because we could snapshot equivalence cache after the
-	// invalidation and then snapshot the cache itself. If the cache is
-	// snapshotted before updates are written, we would update equivalence
-	// cache with stale information which is based on snapshot of old cache.
 	if err := sched.SchedulerCache.RemoveNode(node); err != nil {
 		klog.ErrorS(err, "Scheduler cache RemoveNode failed")
 	}
@@ -174,7 +169,12 @@ func (sched *Scheduler) deletePodFromSchedulingQueue(obj interface{}) {
 		klog.ErrorS(err, "Unable to get profile", "pod", klog.KObj(pod))
 		return
 	}
-	fwk.RejectWaitingPod(pod.UID)
+	// If a waiting pod is rejected, it indicates it's previously assumed and we're
+	// removing it from the scheduler cache. In this case, signal a AssignedPodDelete
+	// event to immediately retry some unscheduled Pods.
+	if fwk.RejectWaitingPod(pod.UID) {
+		sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(queue.AssignedPodDelete, nil)
+	}
 }
 
 func (sched *Scheduler) addPodToCache(obj interface{}) {
@@ -213,11 +213,6 @@ func (sched *Scheduler) updatePodInCache(oldObj, newObj interface{}) {
 		return
 	}
 
-	// NOTE: Updates must be written to scheduler cache before invalidating
-	// equivalence cache, because we could snapshot equivalence cache after the
-	// invalidation and then snapshot the cache itself. If the cache is
-	// snapshotted before updates are written, we would update equivalence
-	// cache with stale information which is based on snapshot of old cache.
 	if err := sched.SchedulerCache.UpdatePod(oldPod, newPod); err != nil {
 		klog.ErrorS(err, "Scheduler cache UpdatePod failed", "oldPod", klog.KObj(oldPod), "newPod", klog.KObj(newPod))
 	}
@@ -242,11 +237,6 @@ func (sched *Scheduler) deletePodFromCache(obj interface{}) {
 		return
 	}
 	klog.V(3).InfoS("Delete event for scheduled pod", "pod", klog.KObj(pod))
-	// NOTE: Updates must be written to scheduler cache before invalidating
-	// equivalence cache, because we could snapshot equivalence cache after the
-	// invalidation and then snapshot the cache itself. If the cache is
-	// snapshotted before updates are written, we would update equivalence
-	// cache with stale information which is based on snapshot of old cache.
 	if err := sched.SchedulerCache.RemovePod(pod); err != nil {
 		klog.ErrorS(err, "Scheduler cache RemovePod failed", "pod", klog.KObj(pod))
 	}
@@ -362,6 +352,14 @@ func addAllEventHandlers(
 			informerFactory.Storage().V1().CSINodes().Informer().AddEventHandler(
 				buildEvtResHandler(at, framework.CSINode, "CSINode"),
 			)
+		case framework.CSIDriver:
+			informerFactory.Storage().V1().CSIDrivers().Informer().AddEventHandler(
+				buildEvtResHandler(at, framework.CSIDriver, "CSIDriver"),
+			)
+		case framework.CSIStorageCapacity:
+			informerFactory.Storage().V1beta1().CSIStorageCapacities().Informer().AddEventHandler(
+				buildEvtResHandler(at, framework.CSIStorageCapacity, "CSIStorageCapacity"),
+			)
 		case framework.PersistentVolume:
 			// MaxPDVolumeCountPredicate: since it relies on the counts of PV.
 			//
@@ -392,10 +390,17 @@ func addAllEventHandlers(
 					},
 				)
 			}
+			if at&framework.Update != 0 {
+				informerFactory.Storage().V1().StorageClasses().Informer().AddEventHandler(
+					cache.ResourceEventHandlerFuncs{
+						UpdateFunc: func(_, _ interface{}) {
+							sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(queue.StorageClassUpdate, nil)
+						},
+					},
+				)
+			}
 		case framework.Service:
 			// ServiceAffinity: affected by the selector of the service is updated.
-			// Also, if new service is added, equivalence cache will also become invalid since
-			// existing pods may be "captured" by this service and change this predicate result.
 			informerFactory.Core().V1().Services().Informer().AddEventHandler(
 				buildEvtResHandler(at, framework.Service, "Service"),
 			)
@@ -422,7 +427,6 @@ func addAllEventHandlers(
 			dynInformer.AddEventHandler(
 				buildEvtResHandler(at, gvk, strings.Title(gvr.Resource)),
 			)
-			go dynInformer.Run(sched.StopEverything)
 		}
 	}
 }

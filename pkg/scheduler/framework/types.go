@@ -69,6 +69,8 @@ const (
 	Service               GVK = "Service"
 	StorageClass          GVK = "storage.k8s.io/StorageClass"
 	CSINode               GVK = "storage.k8s.io/CSINode"
+	CSIDriver             GVK = "storage.k8s.io/CSIDriver"
+	CSIStorageCapacity    GVK = "storage.k8s.io/CSIStorageCapacity"
 	WildCard              GVK = "*"
 )
 
@@ -271,8 +273,8 @@ func getAffinityTerms(pod *v1.Pod, v1Terms []v1.PodAffinityTerm) ([]AffinityTerm
 	}
 
 	var terms []AffinityTerm
-	for _, term := range v1Terms {
-		t, err := newAffinityTerm(pod, &term)
+	for i := range v1Terms {
+		t, err := newAffinityTerm(pod, &v1Terms[i])
 		if err != nil {
 			// We get here if the label selector failed to process
 			return nil, err
@@ -289,13 +291,13 @@ func getWeightedAffinityTerms(pod *v1.Pod, v1Terms []v1.WeightedPodAffinityTerm)
 	}
 
 	var terms []WeightedAffinityTerm
-	for _, term := range v1Terms {
-		t, err := newAffinityTerm(pod, &term.PodAffinityTerm)
+	for i := range v1Terms {
+		t, err := newAffinityTerm(pod, &v1Terms[i].PodAffinityTerm)
 		if err != nil {
 			// We get here if the label selector failed to process
 			return nil, err
 		}
-		terms = append(terms, WeightedAffinityTerm{AffinityTerm: *t, Weight: term.Weight})
+		terms = append(terms, WeightedAffinityTerm{AffinityTerm: *t, Weight: v1Terms[i].Weight})
 	}
 	return terms, nil
 }
@@ -386,6 +388,10 @@ type NodeInfo struct {
 	// checking an image's existence and advanced usage (e.g., image locality scheduling policy) based on the image
 	// state information.
 	ImageStates map[string]*ImageStateSummary
+
+	// PVCRefCounts contains a mapping of PVC names to the number of pods on the node using it.
+	// Keys are in the format "namespace/name".
+	PVCRefCounts map[string]int
 
 	// Whenever NodeInfo changes, generation is bumped.
 	// This is used to avoid cloning it if the object didn't change.
@@ -512,6 +518,7 @@ func NewNodeInfo(pods ...*v1.Pod) *NodeInfo {
 		Generation:       nextGeneration(),
 		UsedPorts:        make(HostPortInfo),
 		ImageStates:      make(map[string]*ImageStateSummary),
+		PVCRefCounts:     make(map[string]int),
 	}
 	for _, pod := range pods {
 		ni.AddPod(pod)
@@ -536,6 +543,7 @@ func (n *NodeInfo) Clone() *NodeInfo {
 		Allocatable:      n.Allocatable.Clone(),
 		UsedPorts:        make(HostPortInfo),
 		ImageStates:      n.ImageStates,
+		PVCRefCounts:     n.PVCRefCounts,
 		Generation:       n.Generation,
 	}
 	if len(n.Pods) > 0 {
@@ -595,6 +603,7 @@ func (n *NodeInfo) AddPodInfo(podInfo *PodInfo) {
 
 	// Consume ports when pods added.
 	n.updateUsedPorts(podInfo.Pod, true)
+	n.updatePVCRefCounts(podInfo.Pod, true)
 
 	n.Generation = nextGeneration()
 }
@@ -672,6 +681,7 @@ func (n *NodeInfo) RemovePod(pod *v1.Pod) error {
 
 			// Release ports when remove Pods.
 			n.updateUsedPorts(pod, false)
+			n.updatePVCRefCounts(pod, false)
 
 			n.Generation = nextGeneration()
 			n.resetSlicesIfEmpty()
@@ -736,14 +746,31 @@ func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64)
 
 // updateUsedPorts updates the UsedPorts of NodeInfo.
 func (n *NodeInfo) updateUsedPorts(pod *v1.Pod, add bool) {
-	for j := range pod.Spec.Containers {
-		container := &pod.Spec.Containers[j]
-		for k := range container.Ports {
-			podPort := &container.Ports[k]
+	for _, container := range pod.Spec.Containers {
+		for _, podPort := range container.Ports {
 			if add {
 				n.UsedPorts.Add(podPort.HostIP, string(podPort.Protocol), podPort.HostPort)
 			} else {
 				n.UsedPorts.Remove(podPort.HostIP, string(podPort.Protocol), podPort.HostPort)
+			}
+		}
+	}
+}
+
+// updatePVCRefCounts updates the PVCRefCounts of NodeInfo.
+func (n *NodeInfo) updatePVCRefCounts(pod *v1.Pod, add bool) {
+	for _, v := range pod.Spec.Volumes {
+		if v.PersistentVolumeClaim == nil {
+			continue
+		}
+
+		key := pod.Namespace + "/" + v.PersistentVolumeClaim.ClaimName
+		if add {
+			n.PVCRefCounts[key] += 1
+		} else {
+			n.PVCRefCounts[key] -= 1
+			if n.PVCRefCounts[key] <= 0 {
+				delete(n.PVCRefCounts, key)
 			}
 		}
 	}

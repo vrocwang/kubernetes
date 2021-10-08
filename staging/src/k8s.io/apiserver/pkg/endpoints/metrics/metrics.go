@@ -17,9 +17,7 @@ limitations under the License.
 package metrics
 
 import (
-	"bufio"
 	"context"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -34,6 +32,7 @@ import (
 	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/endpoints/responsewriter"
 	"k8s.io/apiserver/pkg/features"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	compbasemetrics "k8s.io/component-base/metrics"
@@ -80,11 +79,20 @@ var (
 		},
 		[]string{"verb", "dry_run", "group", "version", "resource", "subresource", "scope", "component", "code"},
 	)
-	longRunningRequestGauge = compbasemetrics.NewGaugeVec(
+	longRunningRequestsGauge = compbasemetrics.NewGaugeVec(
 		&compbasemetrics.GaugeOpts{
-			Name:           "apiserver_longrunning_gauge",
+			Name:           "apiserver_longrunning_requests",
 			Help:           "Gauge of all active long-running apiserver requests broken out by verb, group, version, resource, scope and component. Not all requests are tracked this way.",
 			StabilityLevel: compbasemetrics.ALPHA,
+		},
+		[]string{"verb", "group", "version", "resource", "subresource", "scope", "component"},
+	)
+	longRunningRequestGauge = compbasemetrics.NewGaugeVec(
+		&compbasemetrics.GaugeOpts{
+			Name:              "apiserver_longrunning_gauge",
+			Help:              "Gauge of all active long-running apiserver requests broken out by verb, group, version, resource, scope and component. Not all requests are tracked this way.",
+			StabilityLevel:    compbasemetrics.ALPHA,
+			DeprecatedVersion: "1.23.0",
 		},
 		[]string{"verb", "group", "version", "resource", "subresource", "scope", "component"},
 	)
@@ -131,9 +139,10 @@ var (
 	// RegisteredWatchers is a number of currently registered watchers splitted by resource.
 	RegisteredWatchers = compbasemetrics.NewGaugeVec(
 		&compbasemetrics.GaugeOpts{
-			Name:           "apiserver_registered_watchers",
-			Help:           "Number of currently registered watchers for a given resources",
-			StabilityLevel: compbasemetrics.ALPHA,
+			Name:              "apiserver_registered_watchers",
+			Help:              "Number of currently registered watchers for a given resources",
+			StabilityLevel:    compbasemetrics.ALPHA,
+			DeprecatedVersion: "1.23.0",
 		},
 		[]string{"group", "version", "kind"},
 	)
@@ -234,6 +243,7 @@ var (
 	metrics = []resettableCollector{
 		deprecatedRequestGauge,
 		requestCounter,
+		longRunningRequestsGauge,
 		longRunningRequestGauge,
 		requestLatencies,
 		responseSizes,
@@ -370,7 +380,7 @@ func RecordRequestAbort(req *http.Request, requestInfo *request.RequestInfo) {
 	}
 
 	scope := CleanScope(requestInfo)
-	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), req)
+	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), "", req)
 	resource := requestInfo.Resource
 	subresource := requestInfo.Subresource
 	group := requestInfo.APIGroup
@@ -393,7 +403,7 @@ func RecordRequestTermination(req *http.Request, requestInfo *request.RequestInf
 	// InstrumentRouteFunc which is registered in installer.go with predefined
 	// list of verbs (different than those translated to RequestInfo).
 	// However, we need to tweak it e.g. to differentiate GET from LIST.
-	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), req)
+	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), "", req)
 
 	if requestInfo.IsResourceRequest {
 		requestTerminationsTotal.WithContext(req.Context()).WithLabelValues(reportedVerb, requestInfo.APIGroup, requestInfo.APIVersion, requestInfo.Resource, requestInfo.Subresource, scope, component, codeToString(code)).Inc()
@@ -408,22 +418,28 @@ func RecordLongRunning(req *http.Request, requestInfo *request.RequestInfo, comp
 	if requestInfo == nil {
 		requestInfo = &request.RequestInfo{Verb: req.Method, Path: req.URL.Path}
 	}
-	var g compbasemetrics.GaugeMetric
+	var g, e compbasemetrics.GaugeMetric
 	scope := CleanScope(requestInfo)
 
 	// We don't use verb from <requestInfo>, as this may be propagated from
 	// InstrumentRouteFunc which is registered in installer.go with predefined
 	// list of verbs (different than those translated to RequestInfo).
 	// However, we need to tweak it e.g. to differentiate GET from LIST.
-	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), req)
+	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), "", req)
 
 	if requestInfo.IsResourceRequest {
+		e = longRunningRequestsGauge.WithContext(req.Context()).WithLabelValues(reportedVerb, requestInfo.APIGroup, requestInfo.APIVersion, requestInfo.Resource, requestInfo.Subresource, scope, component)
 		g = longRunningRequestGauge.WithContext(req.Context()).WithLabelValues(reportedVerb, requestInfo.APIGroup, requestInfo.APIVersion, requestInfo.Resource, requestInfo.Subresource, scope, component)
 	} else {
+		e = longRunningRequestsGauge.WithContext(req.Context()).WithLabelValues(reportedVerb, "", "", "", requestInfo.Path, scope, component)
 		g = longRunningRequestGauge.WithContext(req.Context()).WithLabelValues(reportedVerb, "", "", "", requestInfo.Path, scope, component)
 	}
+	e.Inc()
 	g.Inc()
-	defer g.Dec()
+	defer func() {
+		e.Dec()
+		g.Dec()
+	}()
 	fn()
 }
 
@@ -434,7 +450,7 @@ func MonitorRequest(req *http.Request, verb, group, version, resource, subresour
 	// InstrumentRouteFunc which is registered in installer.go with predefined
 	// list of verbs (different than those translated to RequestInfo).
 	// However, we need to tweak it e.g. to differentiate GET from LIST.
-	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), req)
+	reportedVerb := cleanVerb(CanonicalVerb(strings.ToUpper(req.Method), scope), verb, req)
 
 	dryRun := cleanDryRun(req.URL)
 	elapsedSeconds := elapsed.Seconds()
@@ -469,16 +485,7 @@ func InstrumentRouteFunc(verb, group, version, resource, subresource, scope, com
 
 		delegate := &ResponseWriterDelegator{ResponseWriter: response.ResponseWriter}
 
-		//lint:file-ignore SA1019 Keep supporting deprecated http.CloseNotifier
-		_, cn := response.ResponseWriter.(http.CloseNotifier)
-		_, fl := response.ResponseWriter.(http.Flusher)
-		_, hj := response.ResponseWriter.(http.Hijacker)
-		var rw http.ResponseWriter
-		if cn && fl && hj {
-			rw = &fancyResponseWriterDelegator{delegate}
-		} else {
-			rw = delegate
-		}
+		rw := responsewriter.WrapForHTTP1Or2(delegate)
 		response.ResponseWriter = rw
 
 		routeFunc(req, response)
@@ -496,15 +503,7 @@ func InstrumentHandlerFunc(verb, group, version, resource, subresource, scope, c
 		}
 
 		delegate := &ResponseWriterDelegator{ResponseWriter: w}
-
-		_, cn := w.(http.CloseNotifier)
-		_, fl := w.(http.Flusher)
-		_, hj := w.(http.Hijacker)
-		if cn && fl && hj {
-			w = &fancyResponseWriterDelegator{delegate}
-		} else {
-			w = delegate
-		}
+		w = responsewriter.WrapForHTTP1Or2(delegate)
 
 		handler(w, req)
 
@@ -514,11 +513,11 @@ func InstrumentHandlerFunc(verb, group, version, resource, subresource, scope, c
 
 // CleanScope returns the scope of the request.
 func CleanScope(requestInfo *request.RequestInfo) string {
-	if requestInfo.Namespace != "" {
-		return "namespace"
-	}
 	if requestInfo.Name != "" {
 		return "resource"
+	}
+	if requestInfo.Namespace != "" {
+		return "namespace"
 	}
 	if requestInfo.IsResourceRequest {
 		return "cluster"
@@ -564,8 +563,15 @@ func CleanVerb(verb string, request *http.Request) string {
 }
 
 // cleanVerb additionally ensures that unknown verbs don't clog up the metrics.
-func cleanVerb(verb string, request *http.Request) string {
+func cleanVerb(verb, suggestedVerb string, request *http.Request) string {
 	reportedVerb := CleanVerb(verb, request)
+	// CanonicalVerb (being an input for this function) doesn't handle correctly the
+	// deprecated path pattern for watch of:
+	//   GET /api/{version}/watch/{resource}
+	// We correct it manually based on the pass verb from the installer.
+	if suggestedVerb == "WATCH" || suggestedVerb == "WATCHLIST" {
+		reportedVerb = "WATCH"
+	}
 	if validRequestMethods.Has(reportedVerb) {
 		return reportedVerb
 	}
@@ -588,6 +594,9 @@ func cleanDryRun(u *url.URL) string {
 	return strings.Join(utilsets.NewString(dryRun...).List(), ",")
 }
 
+var _ http.ResponseWriter = (*ResponseWriterDelegator)(nil)
+var _ responsewriter.UserProvidedDecorator = (*ResponseWriterDelegator)(nil)
+
 // ResponseWriterDelegator interface wraps http.ResponseWriter to additionally record content-length, status-code, etc.
 type ResponseWriterDelegator struct {
 	http.ResponseWriter
@@ -595,6 +604,10 @@ type ResponseWriterDelegator struct {
 	status      int
 	written     int64
 	wroteHeader bool
+}
+
+func (r *ResponseWriterDelegator) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func (r *ResponseWriterDelegator) WriteHeader(code int) {
@@ -618,22 +631,6 @@ func (r *ResponseWriterDelegator) Status() int {
 
 func (r *ResponseWriterDelegator) ContentLength() int {
 	return int(r.written)
-}
-
-type fancyResponseWriterDelegator struct {
-	*ResponseWriterDelegator
-}
-
-func (f *fancyResponseWriterDelegator) CloseNotify() <-chan bool {
-	return f.ResponseWriter.(http.CloseNotifier).CloseNotify()
-}
-
-func (f *fancyResponseWriterDelegator) Flush() {
-	f.ResponseWriter.(http.Flusher).Flush()
-}
-
-func (f *fancyResponseWriterDelegator) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return f.ResponseWriter.(http.Hijacker).Hijack()
 }
 
 // Small optimization over Itoa

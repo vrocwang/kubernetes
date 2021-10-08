@@ -17,10 +17,6 @@ limitations under the License.
 package v1beta2
 
 import (
-	"net"
-	"strconv"
-
-	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -33,8 +29,8 @@ import (
 )
 
 var defaultResourceSpec = []v1beta2.ResourceSpec{
-	{Name: string(corev1.ResourceCPU), Weight: 1},
-	{Name: string(corev1.ResourceMemory), Weight: 1},
+	{Name: string(v1.ResourceCPU), Weight: 1},
+	{Name: string(v1.ResourceMemory), Weight: 1},
 }
 
 func addDefaultingFuncs(scheme *runtime.Scheme) error {
@@ -124,50 +120,6 @@ func SetDefaults_KubeSchedulerConfiguration(obj *v1beta2.KubeSchedulerConfigurat
 		setDefaults_KubeSchedulerProfile(prof)
 	}
 
-	// For Healthz and Metrics bind addresses, we want to check:
-	// 1. If the value is nil, default to 0.0.0.0 and default scheduler port
-	// 2. If there is a value set, attempt to split it. If it's just a port (ie, ":1234"), default to 0.0.0.0 with that port
-	// 3. If splitting the value fails, check if the value is even a valid IP. If so, use that with the default port.
-	// Otherwise leave the address as-is, it will be caught during validation.
-	defaultBindAddress := net.JoinHostPort("0.0.0.0", strconv.Itoa(config.DefaultInsecureSchedulerPort))
-	if obj.HealthzBindAddress == nil {
-		obj.HealthzBindAddress = &defaultBindAddress
-	} else {
-		if host, port, err := net.SplitHostPort(*obj.HealthzBindAddress); err == nil {
-			if len(host) == 0 {
-				host = "0.0.0.0"
-			}
-			hostPort := net.JoinHostPort(host, port)
-			obj.HealthzBindAddress = &hostPort
-		} else {
-			// Something went wrong splitting the host/port, could just be a missing port so check if the
-			// existing value is a valid IP address. If so, use that with the default scheduler port
-			if host := net.ParseIP(*obj.HealthzBindAddress); host != nil {
-				hostPort := net.JoinHostPort(*obj.HealthzBindAddress, strconv.Itoa(config.DefaultInsecureSchedulerPort))
-				obj.HealthzBindAddress = &hostPort
-			}
-		}
-	}
-
-	if obj.MetricsBindAddress == nil {
-		obj.MetricsBindAddress = &defaultBindAddress
-	} else {
-		if host, port, err := net.SplitHostPort(*obj.MetricsBindAddress); err == nil {
-			if len(host) == 0 {
-				host = "0.0.0.0"
-			}
-			hostPort := net.JoinHostPort(host, port)
-			obj.MetricsBindAddress = &hostPort
-		} else {
-			// Something went wrong splitting the host/port, could just be a missing port so check if the
-			// existing value is a valid IP address. If so, use that with the default scheduler port
-			if host := net.ParseIP(*obj.MetricsBindAddress); host != nil {
-				hostPort := net.JoinHostPort(*obj.MetricsBindAddress, strconv.Itoa(config.DefaultInsecureSchedulerPort))
-				obj.MetricsBindAddress = &hostPort
-			}
-		}
-	}
-
 	if obj.PercentageOfNodesToScore == nil {
 		percentageOfNodesToScore := int32(config.DefaultPercentageOfNodesToScore)
 		obj.PercentageOfNodesToScore = &percentageOfNodesToScore
@@ -241,30 +193,36 @@ func SetDefaults_InterPodAffinityArgs(obj *v1beta2.InterPodAffinityArgs) {
 	}
 }
 
-func SetDefaults_NodeResourcesLeastAllocatedArgs(obj *v1beta2.NodeResourcesLeastAllocatedArgs) {
-	if len(obj.Resources) == 0 {
-		// If no resources specified, used the default set.
-		obj.Resources = append(obj.Resources, defaultResourceSpec...)
-	}
-}
-
-func SetDefaults_NodeResourcesMostAllocatedArgs(obj *v1beta2.NodeResourcesMostAllocatedArgs) {
-	if len(obj.Resources) == 0 {
-		// If no resources specified, used the default set.
-		obj.Resources = append(obj.Resources, defaultResourceSpec...)
-	}
-}
-
-func SetDefaults_RequestedToCapacityRatioArgs(obj *v1beta2.RequestedToCapacityRatioArgs) {
-	if len(obj.Resources) == 0 {
-		// If no resources specified, used the default set.
-		obj.Resources = append(obj.Resources, defaultResourceSpec...)
-	}
-}
-
 func SetDefaults_VolumeBindingArgs(obj *v1beta2.VolumeBindingArgs) {
 	if obj.BindTimeoutSeconds == nil {
 		obj.BindTimeoutSeconds = pointer.Int64Ptr(600)
+	}
+	if len(obj.Shape) == 0 && feature.DefaultFeatureGate.Enabled(features.VolumeCapacityPriority) {
+		obj.Shape = []v1beta2.UtilizationShapePoint{
+			{
+				Utilization: 0,
+				Score:       0,
+			},
+			{
+				Utilization: 100,
+				Score:       int32(config.MaxCustomPriorityScore),
+			},
+		}
+	}
+}
+
+func SetDefaults_NodeResourcesBalancedAllocationArgs(obj *v1beta2.NodeResourcesBalancedAllocationArgs) {
+	if len(obj.Resources) == 0 {
+		obj.Resources = append(obj.Resources,
+			v1beta2.ResourceSpec{Name: string(v1.ResourceCPU), Weight: 1},
+			v1beta2.ResourceSpec{Name: string(v1.ResourceMemory), Weight: 1},
+		)
+	}
+	// If the weight is not set or it is explicitly set to 0, then apply the default weight(1) instead.
+	for i := range obj.Resources {
+		if obj.Resources[i].Weight == 0 {
+			obj.Resources[i].Weight = 1
+		}
 	}
 }
 
@@ -277,5 +235,23 @@ func SetDefaults_PodTopologySpreadArgs(obj *v1beta2.PodTopologySpreadArgs) {
 	}
 	if obj.DefaultingType == "" {
 		obj.DefaultingType = v1beta2.ListDefaulting
+	}
+}
+
+func SetDefaults_NodeResourcesFitArgs(obj *v1beta2.NodeResourcesFitArgs) {
+	if obj.ScoringStrategy == nil {
+		obj.ScoringStrategy = &v1beta2.ScoringStrategy{
+			Type:      v1beta2.ScoringStrategyType(config.LeastAllocated),
+			Resources: defaultResourceSpec,
+		}
+	}
+	if len(obj.ScoringStrategy.Resources) == 0 {
+		// If no resources specified, use the default set.
+		obj.ScoringStrategy.Resources = append(obj.ScoringStrategy.Resources, defaultResourceSpec...)
+	}
+	for i := range obj.ScoringStrategy.Resources {
+		if obj.ScoringStrategy.Resources[i].Weight == 0 {
+			obj.ScoringStrategy.Resources[i].Weight = 1
+		}
 	}
 }

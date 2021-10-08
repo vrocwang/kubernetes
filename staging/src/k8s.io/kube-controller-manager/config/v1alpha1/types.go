@@ -119,6 +119,9 @@ type KubeControllerManagerConfiguration struct {
 	// EndpointSliceMirroringControllerConfiguration holds configuration for
 	// EndpointSliceMirroringController related features.
 	EndpointSliceMirroringController EndpointSliceMirroringControllerConfiguration
+	// EphemeralVolumeControllerConfiguration holds configuration for EphemeralVolumeController
+	// related features.
+	EphemeralVolumeController EphemeralVolumeControllerConfiguration
 	// GarbageCollectorControllerConfiguration holds configuration for
 	// GarbageCollectorController related features.
 	GarbageCollectorController GarbageCollectorControllerConfiguration
@@ -193,8 +196,8 @@ type CSRSigningControllerConfiguration struct {
 	// legacyUnknownSignerConfiguration holds the certificate and key used to issue certificates for the kubernetes.io/legacy-unknown
 	LegacyUnknownSignerConfiguration CSRSigningConfiguration
 
-	// clusterSigningDuration is the length of duration signed certificates
-	// will be given.
+	// clusterSigningDuration is the max length of duration signed certificates will be given.
+	// Individual CSRs may request shorter certs by setting spec.expirationSeconds.
 	ClusterSigningDuration metav1.Duration
 }
 
@@ -298,6 +301,14 @@ type EndpointSliceMirroringControllerConfiguration struct {
 	// single EndpointSlice update. Default 0 value means that each Endpoints
 	// update triggers an EndpointSlice update.
 	MirroringEndpointUpdatesBatchPeriod metav1.Duration
+}
+
+// EphemeralVolumeControllerConfiguration contains elements describing EphemeralVolumeController.
+type EphemeralVolumeControllerConfiguration struct {
+	// ConcurrentEphemeralVolumeSyncseSyncs is the number of ephemeral volume syncing operations
+	// that will be done concurrently. Larger number = faster ephemeral volume updating,
+	// but more CPU (and network) load.
+	ConcurrentEphemeralVolumeSyncs int32
 }
 
 // GarbageCollectorControllerConfiguration contains elements describing GarbageCollectorController.

@@ -53,11 +53,12 @@ type KubeSchedulerConfiguration struct {
 	// ClientConnection specifies the kubeconfig file and client connection
 	// settings for the proxy server to use when communicating with the apiserver.
 	ClientConnection componentbaseconfigv1alpha1.ClientConnectionConfiguration `json:"clientConnection"`
-	// HealthzBindAddress is the IP address and port for the health check server to serve on,
-	// defaulting to 0.0.0.0:10251
+
+	// Note: Both HealthzBindAddress and MetricsBindAddress fields are deprecated.
+	// Only empty address or port 0 is allowed. Anything else will fail validation.
+	// HealthzBindAddress is the IP address and port for the health check server to serve on.
 	HealthzBindAddress *string `json:"healthzBindAddress,omitempty"`
-	// MetricsBindAddress is the IP address and port for the metrics server to
-	// serve on, defaulting to 0.0.0.0:10251.
+	// MetricsBindAddress is the IP address and port for the metrics server to serve on.
 	MetricsBindAddress *string `json:"metricsBindAddress,omitempty"`
 
 	// DebuggingConfiguration holds configuration for Debugging related features
@@ -197,6 +198,8 @@ type Plugins struct {
 // If an array is empty, missing, or nil, default plugins at that extension point will be used.
 type PluginSet struct {
 	// Enabled specifies plugins that should be enabled in addition to default plugins.
+	// If the default plugin is also configured in the scheduler config file, the weight of plugin will
+	// be overridden accordingly.
 	// These are called after default plugins and in the same order specified here.
 	// +listType=atomic
 	Enabled []Plugin `json:"enabled,omitempty"`

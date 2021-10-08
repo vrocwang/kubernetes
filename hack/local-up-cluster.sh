@@ -80,6 +80,7 @@ HOSTNAME_OVERRIDE=${HOSTNAME_OVERRIDE:-"127.0.0.1"}
 EXTERNAL_CLOUD_PROVIDER=${EXTERNAL_CLOUD_PROVIDER:-false}
 EXTERNAL_CLOUD_PROVIDER_BINARY=${EXTERNAL_CLOUD_PROVIDER_BINARY:-""}
 EXTERNAL_CLOUD_VOLUME_PLUGIN=${EXTERNAL_CLOUD_VOLUME_PLUGIN:-""}
+CONFIGURE_CLOUD_ROUTES=${CONFIGURE_CLOUD_ROUTES:-true}
 CLOUD_PROVIDER=${CLOUD_PROVIDER:-""}
 CLOUD_CONFIG=${CLOUD_CONFIG:-""}
 KUBELET_PROVIDER_ID=${KUBELET_PROVIDER_ID:-"$(hostname)"}
@@ -221,6 +222,7 @@ API_BIND_ADDR=${API_BIND_ADDR:-"0.0.0.0"}
 EXTERNAL_HOSTNAME=${EXTERNAL_HOSTNAME:-localhost}
 
 KUBELET_HOST=${KUBELET_HOST:-"127.0.0.1"}
+KUBELET_RESOLV_CONF=${KUBELET_RESOLV_CONF:-"/etc/resolv.conf"}
 # By default only allow CORS for requests on localhost
 API_CORS_ALLOWED_ORIGINS=${API_CORS_ALLOWED_ORIGINS:-/127.0.0.1(:[0-9]+)?$,/localhost(:[0-9]+)?$}
 KUBELET_PORT=${KUBELET_PORT:-10250}
@@ -653,6 +655,7 @@ function start_controller_manager {
     fi
 
     cloud_config_arg=("--cloud-provider=${CLOUD_PROVIDER}" "--cloud-config=${CLOUD_CONFIG}")
+    cloud_config_arg+=("--configure-cloud-routes=${CONFIGURE_CLOUD_ROUTES}")
     if [[ "${EXTERNAL_CLOUD_PROVIDER:-}" == "true" ]]; then
       cloud_config_arg=("--cloud-provider=external")
       cloud_config_arg+=("--external-cloud-volume-plugin=${EXTERNAL_CLOUD_VOLUME_PLUGIN}")
@@ -707,6 +710,7 @@ function start_cloud_controller_manager {
       --feature-gates="${FEATURE_GATES}" \
       --cloud-provider="${CLOUD_PROVIDER}" \
       --cloud-config="${CLOUD_CONFIG}" \
+      --configure-cloud-routes="${CONFIGURE_CLOUD_ROUTES}" \
       --kubeconfig "${CERT_DIR}"/controller.kubeconfig \
       --use-service-account-credentials \
       --leader-elect=false \
@@ -786,7 +790,7 @@ function start_kubelet {
 
     # warn if users are running with swap allowed
     if [ "${FAIL_SWAP_ON}" == "false" ]; then
-        echo "WARNING : The kubelet is configured to not fail even if swap is enabled; production deployments should disable swap."
+        echo "WARNING : The kubelet is configured to not fail even if swap is enabled; production deployments should disable swap unless testing NodeSwap feature."
     fi
 
     if [[ "${REUSE_CERTS}" != true ]]; then
@@ -812,6 +816,7 @@ readOnlyPort: ${KUBELET_READ_ONLY_PORT}
 rotateCertificates: true
 runtimeRequestTimeout: "${RUNTIME_REQUEST_TIMEOUT}"
 staticPodPath: "${POD_MANIFEST_PATH}"
+resolvConf: "${KUBELET_RESOLV_CONF}"
 EOF
     {
       # authentication
@@ -927,7 +932,7 @@ function start_kubescheduler {
     SCHEDULER_LOG=${LOG_DIR}/kube-scheduler.log
 
     cat <<EOF > /tmp/kube-scheduler.yaml
-apiVersion: kubescheduler.config.k8s.io/v1beta1
+apiVersion: kubescheduler.config.k8s.io/v1beta2
 kind: KubeSchedulerConfiguration
 clientConnection:
   kubeconfig: ${CERT_DIR}/scheduler.kubeconfig
@@ -1188,9 +1193,22 @@ fi
 
 if [[ "${START_MODE}" != "kubeletonly" ]]; then
   if [[ "${START_MODE}" != "nokubeproxy" ]]; then
-    start_kubeproxy
+    ## TODO remove this check if/when kubelet is supported on darwin
+    # Detect the OS name/arch and display appropriate error.
+    case "$(uname -s)" in
+      Darwin)
+        print_color "kubelet is not currently supported in darwin, kube-proxy aborted."
+        ;;
+      Linux)
+        start_kubeproxy
+        ;;
+      *)
+        print_color "Unsupported host OS.  Must be Linux or Mac OS X, kube-proxy aborted."
+        ;;
+    esac
   fi
 fi
+
 if [[ -n "${PSP_ADMISSION}" && "${AUTHORIZATION_MODE}" = *RBAC* ]]; then
   create_psp_policy
 fi

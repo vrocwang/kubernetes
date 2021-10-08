@@ -34,16 +34,17 @@ import (
 
 	"k8s.io/klog/v2"
 	utilexec "k8s.io/utils/exec"
-	utilnet "k8s.io/utils/net"
+	netutils "k8s.io/utils/net"
 
 	v1 "k8s.io/api/core/v1"
-	discovery "k8s.io/api/discovery/v1beta1"
+	discovery "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
+	utilsysctl "k8s.io/component-helpers/node/utils/sysctl"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/proxy"
 	"k8s.io/kubernetes/pkg/proxy/healthcheck"
@@ -56,7 +57,6 @@ import (
 	utilipset "k8s.io/kubernetes/pkg/util/ipset"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 	utilipvs "k8s.io/kubernetes/pkg/util/ipvs"
-	utilsysctl "k8s.io/kubernetes/pkg/util/sysctl"
 )
 
 const (
@@ -91,6 +91,9 @@ const (
 	DefaultDummyDevice = "kube-ipvs0"
 
 	connReuseMinSupportedKernelVersion = "4.1"
+
+	// https://github.com/torvalds/linux/commit/35dfb013149f74c2be1ff9c78f14e6a3cd1539d1
+	connReuseFixedKernelVersion = "5.9"
 )
 
 // iptablesJumpChain is tables of iptables chains that ipvs proxier used to install iptables or cleanup iptables.
@@ -188,8 +191,8 @@ var ipsetWithIptablesChain = []struct {
 	{kubeNodePortSetTCP, string(KubeNodePortChain), string(KubeMarkMasqChain), "dst", utilipset.ProtocolTCP},
 	{kubeNodePortLocalSetUDP, string(KubeNodePortChain), "RETURN", "dst", utilipset.ProtocolUDP},
 	{kubeNodePortSetUDP, string(KubeNodePortChain), string(KubeMarkMasqChain), "dst", utilipset.ProtocolUDP},
-	{kubeNodePortSetSCTP, string(KubeNodePortChain), string(KubeMarkMasqChain), "dst,dst", utilipset.ProtocolSCTP},
 	{kubeNodePortLocalSetSCTP, string(KubeNodePortChain), "RETURN", "dst,dst", utilipset.ProtocolSCTP},
+	{kubeNodePortSetSCTP, string(KubeNodePortChain), string(KubeMarkMasqChain), "dst,dst", utilipset.ProtocolSCTP},
 }
 
 // In IPVS proxy mode, the following flags need to be set
@@ -219,12 +222,11 @@ type Proxier struct {
 	mu           sync.Mutex // protects the following fields
 	serviceMap   proxy.ServiceMap
 	endpointsMap proxy.EndpointsMap
-	portsMap     map[utilnet.LocalPort]utilnet.Closeable
+	portsMap     map[netutils.LocalPort]netutils.Closeable
 	nodeLabels   map[string]string
-	// endpointsSynced, endpointSlicesSynced, and servicesSynced are set to true when
+	// endpointSlicesSynced, and servicesSynced are set to true when
 	// corresponding objects are synced after startup. This is used to avoid updating
 	// ipvs rules with some partial data after kube-proxy restart.
-	endpointsSynced      bool
 	endpointSlicesSynced bool
 	servicesSynced       bool
 	initialized          int32
@@ -246,8 +248,8 @@ type Proxier struct {
 	localDetector  proxyutiliptables.LocalTrafficDetector
 	hostname       string
 	nodeIP         net.IP
-	portMapper     utilnet.PortOpener
-	recorder       record.EventRecorder
+	portMapper     netutils.PortOpener
+	recorder       events.EventRecorder
 
 	serviceHealthServer healthcheck.ServiceHealthServer
 	healthzServer       healthcheck.ProxierHealthUpdater
@@ -310,7 +312,7 @@ func (r *realIPGetter) NodeIPs() (ips []net.IP, err error) {
 	}
 	// translate ip string to IP
 	for _, ipStr := range nodeAddress.UnsortedList() {
-		a := net.ParseIP(ipStr)
+		a := netutils.ParseIPSloppy(ipStr)
 		if a.IsLoopback() {
 			continue
 		}
@@ -349,7 +351,7 @@ func NewProxier(ipt utiliptables.Interface,
 	localDetector proxyutiliptables.LocalTrafficDetector,
 	hostname string,
 	nodeIP net.IP,
-	recorder record.EventRecorder,
+	recorder events.EventRecorder,
 	healthzServer healthcheck.ProxierHealthUpdater,
 	scheduler string,
 	nodePortAddresses []string,
@@ -377,6 +379,9 @@ func NewProxier(ipt utiliptables.Interface,
 	}
 	if kernelVersion.LessThan(version.MustParseGeneric(connReuseMinSupportedKernelVersion)) {
 		klog.ErrorS(nil, fmt.Sprintf("can't set sysctl %s, kernel version must be at least %s", sysctlConnReuse, connReuseMinSupportedKernelVersion))
+	} else if kernelVersion.AtLeast(version.MustParseGeneric(connReuseFixedKernelVersion)) {
+		// https://github.com/kubernetes/kubernetes/issues/93297
+		klog.V(2).InfoS("Left as-is", "sysctl", sysctlConnReuse)
 	} else {
 		// Set the connection reuse mode
 		if err := utilproxy.EnsureSysctl(sysctl, sysctlConnReuse, 0); err != nil {
@@ -436,9 +441,7 @@ func NewProxier(ipt utiliptables.Interface,
 		scheduler = DefaultScheduler
 	}
 
-	serviceHealthServer := healthcheck.NewServiceHealthServer(hostname, recorder)
-
-	endpointSlicesEnabled := utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceProxying)
+	serviceHealthServer := healthcheck.NewServiceHealthServer(hostname, recorder, nodePortAddresses)
 
 	ipFamilyMap := utilproxy.MapCIDRsByIPFamily(nodePortAddresses)
 	nodePortAddresses = ipFamilyMap[ipFamily]
@@ -448,15 +451,15 @@ func NewProxier(ipt utiliptables.Interface,
 	}
 
 	// excludeCIDRs has been validated before, here we just parse it to IPNet list
-	parsedExcludeCIDRs, _ := utilnet.ParseCIDRs(excludeCIDRs)
+	parsedExcludeCIDRs, _ := netutils.ParseCIDRs(excludeCIDRs)
 
 	proxier := &Proxier{
 		ipFamily:              ipFamily,
-		portsMap:              make(map[utilnet.LocalPort]utilnet.Closeable),
+		portsMap:              make(map[netutils.LocalPort]netutils.Closeable),
 		serviceMap:            make(proxy.ServiceMap),
 		serviceChanges:        proxy.NewServiceChangeTracker(newServiceInfo, ipFamily, recorder, nil),
 		endpointsMap:          make(proxy.EndpointsMap),
-		endpointsChanges:      proxy.NewEndpointChangeTracker(hostname, nil, ipFamily, recorder, endpointSlicesEnabled, nil),
+		endpointsChanges:      proxy.NewEndpointChangeTracker(hostname, nil, ipFamily, recorder, nil),
 		syncPeriod:            syncPeriod,
 		minSyncPeriod:         minSyncPeriod,
 		excludeCIDRs:          parsedExcludeCIDRs,
@@ -467,7 +470,7 @@ func NewProxier(ipt utiliptables.Interface,
 		localDetector:         localDetector,
 		hostname:              hostname,
 		nodeIP:                nodeIP,
-		portMapper:            &utilnet.ListenPortOpener,
+		portMapper:            &netutils.ListenPortOpener,
 		recorder:              recorder,
 		serviceHealthServer:   serviceHealthServer,
 		healthzServer:         healthzServer,
@@ -517,7 +520,7 @@ func NewDualStackProxier(
 	localDetectors [2]proxyutiliptables.LocalTrafficDetector,
 	hostname string,
 	nodeIP [2]net.IP,
-	recorder record.EventRecorder,
+	recorder events.EventRecorder,
 	healthzServer healthcheck.ProxierHealthUpdater,
 	scheduler string,
 	nodePortAddresses []string,
@@ -555,7 +558,7 @@ func NewDualStackProxier(
 func filterCIDRs(wantIPv6 bool, cidrs []string) []string {
 	var filteredCIDRs []string
 	for _, cidr := range cidrs {
-		if utilnet.IsIPv6CIDRString(cidr) == wantIPv6 {
+		if netutils.IsIPv6CIDRString(cidr) == wantIPv6 {
 			filteredCIDRs = append(filteredCIDRs, cidr)
 		}
 	}
@@ -621,7 +624,7 @@ func (handle *LinuxKernelHandler) GetModules() ([]string, error) {
 		kernelConfigFile := fmt.Sprintf("/boot/config-%s", kernelVersionStr)
 		kConfig, err := ioutil.ReadFile(kernelConfigFile)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to read Kernel Config file %s with error %v", kernelConfigFile, err)
+			return nil, fmt.Errorf("failed to read Kernel Config file %s with error %w", kernelConfigFile, err)
 		}
 		for _, module := range ipvsModules {
 			if match, _ := regexp.Match("CONFIG_"+strings.ToUpper(module)+"=y", kConfig); match {
@@ -631,7 +634,7 @@ func (handle *LinuxKernelHandler) GetModules() ([]string, error) {
 		return bmods, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read file /proc/modules with error %v", err)
+		return nil, fmt.Errorf("failed to read file /proc/modules with error %w", err)
 	}
 	defer modulesFile.Close()
 
@@ -881,39 +884,7 @@ func (proxier *Proxier) OnServiceDelete(service *v1.Service) {
 func (proxier *Proxier) OnServiceSynced() {
 	proxier.mu.Lock()
 	proxier.servicesSynced = true
-	if utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceProxying) {
-		proxier.setInitialized(proxier.endpointSlicesSynced)
-	} else {
-		proxier.setInitialized(proxier.endpointsSynced)
-	}
-	proxier.mu.Unlock()
-
-	// Sync unconditionally - this is called once per lifetime.
-	proxier.syncProxyRules()
-}
-
-// OnEndpointsAdd is called whenever creation of new endpoints object is observed.
-func (proxier *Proxier) OnEndpointsAdd(endpoints *v1.Endpoints) {
-	proxier.OnEndpointsUpdate(nil, endpoints)
-}
-
-// OnEndpointsUpdate is called whenever modification of an existing endpoints object is observed.
-func (proxier *Proxier) OnEndpointsUpdate(oldEndpoints, endpoints *v1.Endpoints) {
-	if proxier.endpointsChanges.Update(oldEndpoints, endpoints) && proxier.isInitialized() {
-		proxier.Sync()
-	}
-}
-
-// OnEndpointsDelete is called whenever deletion of an existing endpoints object is observed.
-func (proxier *Proxier) OnEndpointsDelete(endpoints *v1.Endpoints) {
-	proxier.OnEndpointsUpdate(endpoints, nil)
-}
-
-// OnEndpointsSynced is called once all the initial event handlers were called and the state is fully propagated to local cache.
-func (proxier *Proxier) OnEndpointsSynced() {
-	proxier.mu.Lock()
-	proxier.endpointsSynced = true
-	proxier.setInitialized(proxier.servicesSynced)
+	proxier.setInitialized(proxier.endpointSlicesSynced)
 	proxier.mu.Unlock()
 
 	// Sync unconditionally - this is called once per lifetime.
@@ -1022,7 +993,6 @@ func (proxier *Proxier) OnNodeSynced() {
 }
 
 // This is where all of the ipvs calls happen.
-// assumes proxier.mu is held
 func (proxier *Proxier) syncProxyRules() {
 	proxier.mu.Lock()
 	defer proxier.mu.Unlock()
@@ -1053,6 +1023,9 @@ func (proxier *Proxier) syncProxyRules() {
 			klog.V(2).InfoS("Stale service", "protocol", strings.ToLower(string(svcInfo.Protocol())), "svcPortName", svcPortName.String(), "clusterIP", svcInfo.ClusterIP().String())
 			staleServices.Insert(svcInfo.ClusterIP().String())
 			for _, extIP := range svcInfo.ExternalIPStrings() {
+				staleServices.Insert(extIP)
+			}
+			for _, extIP := range svcInfo.LoadBalancerIPStrings() {
 				staleServices.Insert(extIP)
 			}
 		}
@@ -1091,7 +1064,7 @@ func (proxier *Proxier) syncProxyRules() {
 	}
 
 	// Accumulate the set of local ports that we will be holding open once this update is complete
-	replacementPortsMap := map[utilnet.LocalPort]utilnet.Closeable{}
+	replacementPortsMap := map[netutils.LocalPort]netutils.Closeable{}
 	// activeIPVSServices represents IPVS service successfully created in this round of sync
 	activeIPVSServices := map[string]bool{}
 	// currentIPVSServices represent IPVS services listed from the system
@@ -1129,7 +1102,7 @@ func (proxier *Proxier) syncProxyRules() {
 		} else {
 			nodeAddresses = nodeAddrSet.List()
 			for _, address := range nodeAddresses {
-				a := net.ParseIP(address)
+				a := netutils.ParseIPSloppy(address)
 				if a.IsLoopback() {
 					continue
 				}
@@ -1148,7 +1121,7 @@ func (proxier *Proxier) syncProxyRules() {
 	// filter node IPs by proxier ipfamily
 	idx := 0
 	for _, nodeIP := range nodeIPs {
-		if (proxier.ipFamily == v1.IPv6Protocol) == utilnet.IsIPv6(nodeIP) {
+		if (proxier.ipFamily == v1.IPv6Protocol) == netutils.IsIPv6(nodeIP) {
 			nodeIPs[idx] = nodeIP
 			idx++
 		}
@@ -1165,10 +1138,10 @@ func (proxier *Proxier) syncProxyRules() {
 			klog.ErrorS(nil, "Failed to cast serviceInfo", "svcName", svcName.String())
 			continue
 		}
-		isIPv6 := utilnet.IsIPv6(svcInfo.ClusterIP())
-		localPortIPFamily := utilnet.IPv4
+		isIPv6 := netutils.IsIPv6(svcInfo.ClusterIP())
+		localPortIPFamily := netutils.IPv4
 		if isIPv6 {
-			localPortIPFamily = utilnet.IPv6
+			localPortIPFamily = netutils.IPv6
 		}
 		protocol := strings.ToLower(string(svcInfo.Protocol()))
 		// Precompute svcNameString; with many services the many calls
@@ -1238,7 +1211,11 @@ func (proxier *Proxier) syncProxyRules() {
 			activeBindAddrs[serv.Address.String()] = true
 			// ExternalTrafficPolicy only works for NodePort and external LB traffic, does not affect ClusterIP
 			// So we still need clusterIP rules in onlyNodeLocalEndpoints mode.
-			if err := proxier.syncEndpoint(svcName, false, svcInfo.NodeLocalInternal(), serv); err != nil {
+			internalNodeLocal := false
+			if utilfeature.DefaultFeatureGate.Enabled(features.ServiceInternalTrafficPolicy) && svcInfo.NodeLocalInternal() {
+				internalNodeLocal = true
+			}
+			if err := proxier.syncEndpoint(svcName, internalNodeLocal, serv); err != nil {
 				klog.ErrorS(err, "Failed to sync endpoint for service", "service", serv.String())
 			}
 		} else {
@@ -1250,14 +1227,14 @@ func (proxier *Proxier) syncProxyRules() {
 			// If the "external" IP happens to be an IP that is local to this
 			// machine, hold the local port open so no other process can open it
 			// (because the socket might open but it would never work).
-			if (svcInfo.Protocol() != v1.ProtocolSCTP) && localAddrSet.Has(net.ParseIP(externalIP)) {
+			if (svcInfo.Protocol() != v1.ProtocolSCTP) && localAddrSet.Has(netutils.ParseIPSloppy(externalIP)) {
 				// We do not start listening on SCTP ports, according to our agreement in the SCTP support KEP
-				lp := utilnet.LocalPort{
+				lp := netutils.LocalPort{
 					Description: "externalIP for " + svcNameString,
 					IP:          externalIP,
 					IPFamily:    localPortIPFamily,
 					Port:        svcInfo.Port(),
-					Protocol:    utilnet.Protocol(svcInfo.Protocol()),
+					Protocol:    netutils.Protocol(svcInfo.Protocol()),
 				}
 				if proxier.portsMap[lp] != nil {
 					klog.V(4).InfoS("Port was open before and is still needed", "port", lp.String())
@@ -1273,7 +1250,7 @@ func (proxier *Proxier) syncProxyRules() {
 								Name:      proxier.hostname,
 								UID:       types.UID(proxier.hostname),
 								Namespace: "",
-							}, v1.EventTypeWarning, err.Error(), msg)
+							}, nil, v1.EventTypeWarning, err.Error(), "SyncProxyRules", msg)
 						klog.ErrorS(err, "can't open port, skipping it", "port", lp.String())
 						continue
 					}
@@ -1307,7 +1284,7 @@ func (proxier *Proxier) syncProxyRules() {
 
 			// ipvs call
 			serv := &utilipvs.VirtualServer{
-				Address:   net.ParseIP(externalIP),
+				Address:   netutils.ParseIPSloppy(externalIP),
 				Port:      uint16(svcInfo.Port()),
 				Protocol:  string(svcInfo.Protocol()),
 				Scheduler: proxier.ipvsScheduler,
@@ -1320,9 +1297,7 @@ func (proxier *Proxier) syncProxyRules() {
 				activeIPVSServices[serv.String()] = true
 				activeBindAddrs[serv.Address.String()] = true
 
-				onlyNodeLocalEndpoints := svcInfo.NodeLocalExternal()
-				onlyNodeLocalEndpointsForInternal := svcInfo.NodeLocalInternal()
-				if err := proxier.syncEndpoint(svcName, onlyNodeLocalEndpoints, onlyNodeLocalEndpointsForInternal, serv); err != nil {
+				if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), serv); err != nil {
 					klog.ErrorS(err, "Failed to sync endpoint for service", "service", serv.String())
 				}
 			} else {
@@ -1384,7 +1359,7 @@ func (proxier *Proxier) syncProxyRules() {
 						proxier.ipsetList[kubeLoadBalancerSourceCIDRSet].activeEntries.Insert(entry.String())
 
 						// ignore error because it has been validated
-						_, cidr, _ := net.ParseCIDR(src)
+						_, cidr, _ := netutils.ParseCIDRSloppy(src)
 						if cidr.Contains(proxier.nodeIP) {
 							allowFromNode = true
 						}
@@ -1411,7 +1386,7 @@ func (proxier *Proxier) syncProxyRules() {
 
 				// ipvs call
 				serv := &utilipvs.VirtualServer{
-					Address:   net.ParseIP(ingress),
+					Address:   netutils.ParseIPSloppy(ingress),
 					Port:      uint16(svcInfo.Port()),
 					Protocol:  string(svcInfo.Protocol()),
 					Scheduler: proxier.ipvsScheduler,
@@ -1423,7 +1398,7 @@ func (proxier *Proxier) syncProxyRules() {
 				if err := proxier.syncService(svcNameString, serv, true, bindedAddresses); err == nil {
 					activeIPVSServices[serv.String()] = true
 					activeBindAddrs[serv.Address.String()] = true
-					if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), svcInfo.NodeLocalInternal(), serv); err != nil {
+					if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), serv); err != nil {
 						klog.ErrorS(err, "Failed to sync endpoint for service", "service", serv)
 					}
 				} else {
@@ -1439,14 +1414,14 @@ func (proxier *Proxier) syncProxyRules() {
 				continue
 			}
 
-			var lps []utilnet.LocalPort
+			var lps []netutils.LocalPort
 			for _, address := range nodeAddresses {
-				lp := utilnet.LocalPort{
+				lp := netutils.LocalPort{
 					Description: "nodePort for " + svcNameString,
 					IP:          address,
 					IPFamily:    localPortIPFamily,
 					Port:        svcInfo.NodePort(),
-					Protocol:    utilnet.Protocol(svcInfo.Protocol()),
+					Protocol:    netutils.Protocol(svcInfo.Protocol()),
 				}
 				if utilproxy.IsZeroCIDR(address) {
 					// Empty IP address means all
@@ -1476,13 +1451,13 @@ func (proxier *Proxier) syncProxyRules() {
 								Name:      proxier.hostname,
 								UID:       types.UID(proxier.hostname),
 								Namespace: "",
-							}, v1.EventTypeWarning, err.Error(), msg)
+							}, nil, v1.EventTypeWarning, err.Error(), "SyncProxyRules", msg)
 						klog.ErrorS(err, "can't open port, skipping it", "port", lp.String())
 						continue
 					}
 					klog.V(2).InfoS("Opened local port", "port", lp.String())
 
-					if lp.Protocol == utilnet.UDP {
+					if lp.Protocol == netutils.UDP {
 						conntrack.ClearEntriesForPort(proxier.exec, lp.Port, isIPv6, v1.ProtocolUDP)
 					}
 					replacementPortsMap[lp] = socket
@@ -1591,7 +1566,7 @@ func (proxier *Proxier) syncProxyRules() {
 				// There is no need to bind Node IP to dummy interface, so set parameter `bindAddr` to `false`.
 				if err := proxier.syncService(svcNameString, serv, false, bindedAddresses); err == nil {
 					activeIPVSServices[serv.String()] = true
-					if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), svcInfo.NodeLocalInternal(), serv); err != nil {
+					if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), serv); err != nil {
 						klog.ErrorS(err, "Failed to sync endpoint for service", "service", serv)
 					}
 				} else {
@@ -2042,7 +2017,7 @@ func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, 
 	return nil
 }
 
-func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, onlyNodeLocalEndpointsForInternal bool, vs *utilipvs.VirtualServer) error {
+func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, vs *utilipvs.VirtualServer) error {
 	appliedVirtualServer, err := proxier.ipvs.GetVirtualServer(vs)
 	if err != nil {
 		klog.Errorf("Failed to get IPVS service, error: %v", err)
@@ -2054,8 +2029,13 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 
 	// curEndpoints represents IPVS destinations listed from current system.
 	curEndpoints := sets.NewString()
-	// newEndpoints represents Endpoints watched from API Server.
-	newEndpoints := sets.NewString()
+	// readyEndpoints represents Endpoints watched from API Server.
+	readyEndpoints := sets.NewString()
+	// localReadyEndpoints represents local endpoints that are ready and NOT terminating.
+	localReadyEndpoints := sets.NewString()
+	// localReadyTerminatingEndpoints represents local endpoints that are ready AND terminating.
+	// Fall back to these endpoints if no non-terminating ready endpoints exist for node-local traffic.
+	localReadyTerminatingEndpoints := sets.NewString()
 
 	curDests, err := proxier.ipvs.GetRealServers(appliedVirtualServer)
 	if err != nil {
@@ -2080,15 +2060,28 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 	}
 
 	for _, epInfo := range endpoints {
-		if !epInfo.IsReady() {
-			continue
+		if epInfo.IsReady() {
+			readyEndpoints.Insert(epInfo.String())
 		}
 
-		if onlyNodeLocalEndpoints && !epInfo.GetIsLocal() {
-			continue
+		if onlyNodeLocalEndpoints && epInfo.GetIsLocal() {
+			if epInfo.IsReady() {
+				localReadyEndpoints.Insert(epInfo.String())
+			} else if epInfo.IsServing() && epInfo.IsTerminating() {
+				localReadyTerminatingEndpoints.Insert(epInfo.String())
+			}
 		}
+	}
 
-		newEndpoints.Insert(epInfo.String())
+	newEndpoints := readyEndpoints
+	if onlyNodeLocalEndpoints {
+		newEndpoints = localReadyEndpoints
+
+		if utilfeature.DefaultFeatureGate.Enabled(features.ProxyTerminatingEndpoints) {
+			if len(newEndpoints) == 0 && localReadyTerminatingEndpoints.Len() > 0 {
+				newEndpoints = localReadyTerminatingEndpoints
+			}
+		}
 	}
 
 	// Create new endpoints
@@ -2105,7 +2098,7 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 		}
 
 		newDest := &utilipvs.RealServer{
-			Address: net.ParseIP(ip),
+			Address: netutils.ParseIPSloppy(ip),
 			Port:    uint16(portNum),
 			Weight:  1,
 		}
@@ -2148,7 +2141,7 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 		}
 
 		delDest := &utilipvs.RealServer{
-			Address: net.ParseIP(ip),
+			Address: netutils.ParseIPSloppy(ip),
 			Port:    uint16(portNum),
 		}
 
@@ -2163,13 +2156,13 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 }
 
 func (proxier *Proxier) cleanLegacyService(activeServices map[string]bool, currentServices map[string]*utilipvs.VirtualServer, legacyBindAddrs map[string]bool) {
-	isIPv6 := utilnet.IsIPv6(proxier.nodeIP)
+	isIPv6 := netutils.IsIPv6(proxier.nodeIP)
 	for cs := range currentServices {
 		svc := currentServices[cs]
 		if proxier.isIPInExcludeCIDRs(svc.Address) {
 			continue
 		}
-		if utilnet.IsIPv6(svc.Address) != isIPv6 {
+		if netutils.IsIPv6(svc.Address) != isIPv6 {
 			// Not our family
 			continue
 		}
@@ -2204,9 +2197,9 @@ func (proxier *Proxier) isIPInExcludeCIDRs(ip net.IP) bool {
 
 func (proxier *Proxier) getLegacyBindAddr(activeBindAddrs map[string]bool, currentBindAddrs []string) map[string]bool {
 	legacyAddrs := make(map[string]bool)
-	isIPv6 := utilnet.IsIPv6(proxier.nodeIP)
+	isIPv6 := netutils.IsIPv6(proxier.nodeIP)
 	for _, addr := range currentBindAddrs {
-		addrIsIPv6 := utilnet.IsIPv6(net.ParseIP(addr))
+		addrIsIPv6 := netutils.IsIPv6(netutils.ParseIPSloppy(addr))
 		if addrIsIPv6 && !isIPv6 || !addrIsIPv6 && isIPv6 {
 			continue
 		}

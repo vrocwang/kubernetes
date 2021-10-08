@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
+
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmapiv1old "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta2"
 	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
@@ -728,6 +729,9 @@ func TestGetInitConfigurationFromCluster(t *testing.T) {
 			}
 			if cfg.ClusterConfiguration.KubernetesVersion != k8sVersionString {
 				t.Errorf("invalid ClusterConfiguration.KubernetesVersion")
+			}
+			if cfg.NodeRegistration.ImagePullPolicy != kubeadmapiv1.DefaultImagePullPolicy {
+				t.Errorf("invalid cfg.NodeRegistration.ImagePullPolicy %v", cfg.NodeRegistration.ImagePullPolicy)
 			}
 			if !rt.newControlPlane && (cfg.LocalAPIEndpoint.AdvertiseAddress != "1.2.3.4" || cfg.LocalAPIEndpoint.BindPort != 1234) {
 				t.Errorf("invalid cfg.LocalAPIEndpoint: %v", cfg.LocalAPIEndpoint)

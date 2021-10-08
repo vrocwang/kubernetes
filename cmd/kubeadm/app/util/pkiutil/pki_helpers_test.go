@@ -30,6 +30,8 @@ import (
 	"testing"
 
 	certutil "k8s.io/client-go/util/cert"
+	netutils "k8s.io/utils/net"
+
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 )
 
@@ -632,7 +634,7 @@ func TestGetAPIServerAltNames(t *testing.T) {
 			for _, IPAddress := range rt.expectedIPAddresses {
 				found := false
 				for _, val := range altNames.IPs {
-					if val.Equal(net.ParseIP(IPAddress)) {
+					if val.Equal(netutils.ParseIPSloppy(IPAddress)) {
 						found = true
 						break
 					}
@@ -697,7 +699,7 @@ func TestGetEtcdAltNames(t *testing.T) {
 		t.Run(IPAddress, func(t *testing.T) {
 			found := false
 			for _, val := range altNames.IPs {
-				if val.Equal(net.ParseIP(IPAddress)) {
+				if val.Equal(netutils.ParseIPSloppy(IPAddress)) {
 					found = true
 					break
 				}
@@ -756,7 +758,7 @@ func TestGetEtcdPeerAltNames(t *testing.T) {
 			for _, IPAddress := range expectedIPAddresses {
 				found := false
 				for _, val := range altNames.IPs {
-					if val.Equal(net.ParseIP(IPAddress)) {
+					if val.Equal(netutils.ParseIPSloppy(IPAddress)) {
 						found = true
 						break
 					}

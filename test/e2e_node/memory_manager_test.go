@@ -176,7 +176,6 @@ func getAllocatableMemoryFromStateFile(s *state.MemoryManagerCheckpoint) []state
 }
 
 type kubeletParams struct {
-	memoryManagerFeatureGate              bool
 	podResourcesGetAllocatableFeatureGate bool
 	memoryManagerPolicy                   string
 	systemReservedMemory                  []kubeletconfig.MemoryReservation
@@ -191,7 +190,7 @@ func getUpdatedKubeletConfig(oldCfg *kubeletconfig.KubeletConfiguration, params 
 	if newCfg.FeatureGates == nil {
 		newCfg.FeatureGates = map[string]bool{}
 	}
-	newCfg.FeatureGates["MemoryManager"] = params.memoryManagerFeatureGate
+
 	newCfg.FeatureGates["KubeletPodResourcesGetAllocatable"] = params.podResourcesGetAllocatableFeatureGate
 
 	newCfg.MemoryManagerPolicy = params.memoryManagerPolicy
@@ -268,7 +267,7 @@ func getAllNUMANodes() []int {
 }
 
 // Serial because the test updates kubelet configuration.
-var _ = SIGDescribe("Memory Manager [Serial] [Feature:MemoryManager][NodeAlphaFeature:MemoryManager]", func() {
+var _ = SIGDescribe("Memory Manager [Serial] [Feature:MemoryManager]", func() {
 	// TODO: add more complex tests that will include interaction between CPUManager, MemoryManager and TopologyManager
 	var (
 		allNUMANodes             []int
@@ -284,7 +283,6 @@ var _ = SIGDescribe("Memory Manager [Serial] [Feature:MemoryManager][NodeAlphaFe
 
 	memoryQuantity := resource.MustParse("1100Mi")
 	defaultKubeParams := &kubeletParams{
-		memoryManagerFeatureGate:              true,
 		podResourcesGetAllocatableFeatureGate: true,
 		systemReservedMemory: []kubeletconfig.MemoryReservation{
 			{
@@ -341,12 +339,17 @@ var _ = SIGDescribe("Memory Manager [Serial] [Feature:MemoryManager][NodeAlphaFe
 			}, 30*time.Second, framework.Poll).Should(gomega.BeNil())
 
 			ginkgo.By("restarting kubelet to pick up pre-allocated hugepages")
+
 			// stop the kubelet and wait until the server will restart it automatically
 			stopKubelet()
+
 			// wait until the kubelet health check will fail
 			gomega.Eventually(func() bool {
 				return kubeletHealthCheck(kubeletHealthCheckURL)
 			}, time.Minute, time.Second).Should(gomega.BeFalse())
+
+			restartKubelet()
+
 			// wait until the kubelet health check will pass
 			gomega.Eventually(func() bool {
 				return kubeletHealthCheck(kubeletHealthCheckURL)
