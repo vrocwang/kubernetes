@@ -399,7 +399,7 @@ func startReplicationController(ctx context.Context, controllerContext Controlle
 		controllerContext.InformerFactory.Core().V1().ReplicationControllers(),
 		controllerContext.ClientBuilder.ClientOrDie("replication-controller"),
 		replicationcontroller.BurstReplicas,
-	).Run(int(controllerContext.ComponentConfig.ReplicationController.ConcurrentRCSyncs), ctx.Done())
+	).Run(ctx, int(controllerContext.ComponentConfig.ReplicationController.ConcurrentRCSyncs))
 	return nil, true, nil
 }
 
@@ -573,9 +573,6 @@ func startPVProtectionController(ctx context.Context, controllerContext Controll
 }
 
 func startTTLAfterFinishedController(ctx context.Context, controllerContext ControllerContext) (controller.Interface, bool, error) {
-	if !utilfeature.DefaultFeatureGate.Enabled(features.TTLAfterFinished) {
-		return nil, false, nil
-	}
 	go ttlafterfinished.New(
 		controllerContext.InformerFactory.Batch().V1().Jobs(),
 		controllerContext.ClientBuilder.ClientOrDie("ttl-after-finished-controller"),

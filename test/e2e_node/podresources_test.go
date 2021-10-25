@@ -53,7 +53,7 @@ type podDesc struct {
 	cntName        string
 	resourceName   string
 	resourceAmount int
-	cpuCount       int
+	cpuRequest     int // cpuRequest is in millicores
 }
 
 func makePodResourcesTestPod(desc podDesc) *v1.Pod {
@@ -66,9 +66,10 @@ func makePodResourcesTestPod(desc podDesc) *v1.Pod {
 		},
 		Command: []string{"sh", "-c", "sleep 1d"},
 	}
-	if desc.cpuCount > 0 {
-		cnt.Resources.Requests[v1.ResourceCPU] = resource.MustParse(fmt.Sprintf("%d", desc.cpuCount))
-		cnt.Resources.Limits[v1.ResourceCPU] = resource.MustParse(fmt.Sprintf("%d", desc.cpuCount))
+	if desc.cpuRequest > 0 {
+		cpuRequestQty := resource.NewMilliQuantity(int64(desc.cpuRequest), resource.DecimalSI)
+		cnt.Resources.Requests[v1.ResourceCPU] = *cpuRequestQty
+		cnt.Resources.Limits[v1.ResourceCPU] = *cpuRequestQty
 		// we don't really care, we only need to be in guaranteed QoS
 		cnt.Resources.Requests[v1.ResourceMemory] = resource.MustParse("100Mi")
 		cnt.Resources.Limits[v1.ResourceMemory] = resource.MustParse("100Mi")
@@ -186,13 +187,14 @@ func matchPodDescWithResources(expected []podDesc, found podResMap) error {
 		if !ok {
 			return fmt.Errorf("no container resources for pod %q container %q", podReq.podName, podReq.cntName)
 		}
-
-		if podReq.cpuCount > 0 {
-			if len(cntInfo.CpuIds) != podReq.cpuCount {
-				return fmt.Errorf("pod %q container %q expected %d cpus got %v", podReq.podName, podReq.cntName, podReq.cpuCount, cntInfo.CpuIds)
+		if podReq.cpuRequest > 0 {
+			if isIntegral(podReq.cpuRequest) && len(cntInfo.CpuIds) != int(podReq.cpuRequest) {
+				return fmt.Errorf("pod %q container %q expected %d cpus got %v", podReq.podName, podReq.cntName, podReq.cpuRequest, cntInfo.CpuIds)
+			}
+			if !isIntegral(podReq.cpuRequest) && len(cntInfo.CpuIds) != 0 {
+				return fmt.Errorf("pod %q container %q requested %d expected to be allocated CPUs from shared pool %v", podReq.podName, podReq.cntName, podReq.cpuRequest, cntInfo.CpuIds)
 			}
 		}
-
 		if podReq.resourceName != "" && podReq.resourceAmount > 0 {
 			dev := findContainerDeviceByName(cntInfo.GetDevices(), podReq.resourceName)
 			if dev == nil {
@@ -288,19 +290,19 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 				cntName:        "cnt-00",
 				resourceName:   sd.resourceName,
 				resourceAmount: 1,
-				cpuCount:       2,
+				cpuRequest:     2000,
 			},
 			{
-				podName:  "pod-02",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-02",
+				cntName:    "cnt-00",
+				cpuRequest: 2000,
 			},
 			{
 				podName:        "pod-03",
 				cntName:        "cnt-00",
 				resourceName:   sd.resourceName,
 				resourceAmount: 1,
-				cpuCount:       1,
+				cpuRequest:     1000,
 			},
 		}
 	} else {
@@ -310,19 +312,19 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 				cntName: "cnt-00",
 			},
 			{
-				podName:  "pod-01",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-01",
+				cntName:    "cnt-00",
+				cpuRequest: 2000,
 			},
 			{
-				podName:  "pod-02",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-02",
+				cntName:    "cnt-00",
+				cpuRequest: 2000,
 			},
 			{
-				podName:  "pod-03",
-				cntName:  "cnt-00",
-				cpuCount: 1,
+				podName:    "pod-03",
+				cntName:    "cnt-00",
+				cpuRequest: 1000,
 			},
 		}
 
@@ -344,12 +346,12 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 				cntName:        "cnt-00",
 				resourceName:   sd.resourceName,
 				resourceAmount: 1,
-				cpuCount:       2,
+				cpuRequest:     2000,
 			},
 			{
-				podName:  "pod-02",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-02",
+				cntName:    "cnt-00",
+				cpuRequest: 2000,
 			},
 		}
 	} else {
@@ -359,14 +361,14 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 				cntName: "cnt-00",
 			},
 			{
-				podName:  "pod-01",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-01",
+				cntName:    "cnt-00",
+				cpuRequest: 2000,
 			},
 			{
-				podName:  "pod-02",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-02",
+				cntName:    "cnt-00",
+				cpuRequest: 2000,
 			},
 		}
 	}
@@ -380,13 +382,13 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 			cntName:        "cnt-00",
 			resourceName:   sd.resourceName,
 			resourceAmount: 1,
-			cpuCount:       1,
+			cpuRequest:     1000,
 		}
 	} else {
 		extra = podDesc{
-			podName:  "pod-03",
-			cntName:  "cnt-00",
-			cpuCount: 1,
+			podName:    "pod-03",
+			cntName:    "cnt-00",
+			cpuRequest: 1000,
 		}
 
 	}
@@ -405,16 +407,16 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 	if sd != nil {
 		expected = []podDesc{
 			{
-				podName:  "pod-00",
-				cntName:  "cnt-00",
-				cpuCount: 1,
+				podName:    "pod-00",
+				cntName:    "cnt-00",
+				cpuRequest: 1000,
 			},
 			{
 				podName:        "pod-01",
 				cntName:        "cnt-00",
 				resourceName:   sd.resourceName,
 				resourceAmount: 1,
-				cpuCount:       2,
+				cpuRequest:     2000,
 			},
 			{
 				podName: "pod-02",
@@ -425,29 +427,29 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 				cntName:        "cnt-00",
 				resourceName:   sd.resourceName,
 				resourceAmount: 1,
-				cpuCount:       1,
+				cpuRequest:     1000,
 			},
 		}
 	} else {
 		expected = []podDesc{
 			{
-				podName:  "pod-00",
-				cntName:  "cnt-00",
-				cpuCount: 1,
+				podName:    "pod-00",
+				cntName:    "cnt-00",
+				cpuRequest: 1000,
 			},
 			{
-				podName:  "pod-01",
-				cntName:  "cnt-00",
-				cpuCount: 2,
+				podName:    "pod-01",
+				cntName:    "cnt-00",
+				cpuRequest: 1000,
 			},
 			{
 				podName: "pod-02",
 				cntName: "cnt-00",
 			},
 			{
-				podName:  "pod-03",
-				cntName:  "cnt-00",
-				cpuCount: 1,
+				podName:    "pod-03",
+				cntName:    "cnt-00",
+				cpuRequest: 1000,
 			},
 		}
 	}
@@ -458,6 +460,38 @@ func podresourcesListTests(f *framework.Framework, cli kubeletpodresourcesv1.Pod
 	expectedPostDelete := filterOutDesc(expected, "pod-01")
 	expectPodResources(1, cli, expectedPostDelete)
 	tpd.deletePodsForTest(f)
+
+	tpd = newTestPodData()
+	ginkgo.By("checking the output when pods request non integral CPUs")
+	if sd != nil {
+		expected = []podDesc{
+			{
+				podName:    "pod-00",
+				cntName:    "cnt-00",
+				cpuRequest: 1500,
+			},
+			{
+				podName:        "pod-01",
+				cntName:        "cnt-00",
+				resourceName:   sd.resourceName,
+				resourceAmount: 1,
+				cpuRequest:     1500,
+			},
+		}
+	} else {
+		expected = []podDesc{
+			{
+				podName:    "pod-00",
+				cntName:    "cnt-00",
+				cpuRequest: 1500,
+			},
+		}
+
+	}
+	tpd.createPodsForTest(f, expected)
+	expectPodResources(1, cli, expected)
+	tpd.deletePodsForTest(f)
+
 }
 
 func podresourcesGetAllocatableResourcesTests(f *framework.Framework, cli kubeletpodresourcesv1.PodResourcesListerClient, sd *sriovData, onlineCPUs, reservedSystemCPUs cpuset.CPUSet) {
@@ -645,9 +679,7 @@ var _ = SIGDescribe("POD Resources [Serial] [Feature:PodResources][NodeFeature:P
 		})
 
 		ginkgo.It("should return the expected error with the feature gate disabled", func() {
-			if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.KubeletPodResourcesGetAllocatable) {
-				e2eskipper.Skipf("this test is meant to run with the POD Resources Extensions feature gate disabled")
-			}
+			e2eskipper.SkipIfFeatureGateEnabled(kubefeatures.KubeletPodResourcesGetAllocatable)
 
 			endpoint, err := util.LocalEndpoint(defaultPodResourcesPath, podresources.Socket)
 			framework.ExpectNoError(err)
@@ -720,7 +752,7 @@ var _ = SIGDescribe("POD Resources [Serial] [Feature:PodResources][NodeFeature:P
 				cntName:        "cnt-01",
 				resourceName:   KubeVirtResourceName,
 				resourceAmount: 1,
-				cpuCount:       1,
+				cpuRequest:     1000,
 			}
 
 			tpd := newTestPodData()
@@ -731,7 +763,7 @@ var _ = SIGDescribe("POD Resources [Serial] [Feature:PodResources][NodeFeature:P
 			expectPodResources(1, cli, []podDesc{desc})
 
 			ginkgo.By("Restarting Kubelet")
-			restartKubelet()
+			restartKubelet(true)
 			framework.WaitForAllNodesSchedulable(f.ClientSet, framework.TestContext.NodeSchedulableTimeout)
 			expectPodResources(1, cli, []podDesc{desc})
 			tpd.deletePodsForTest(f)
@@ -820,7 +852,6 @@ func enablePodResourcesFeatureGateInKubelet(f *framework.Framework) (oldCfg *kub
 	if newCfg.FeatureGates == nil {
 		newCfg.FeatureGates = make(map[string]bool)
 	}
-	newCfg.FeatureGates["KubeletPodResourcesGetAllocatable"] = true
 
 	// Update the Kubelet configuration.
 	framework.ExpectNoError(setKubeletConfiguration(f, newCfg))
@@ -906,4 +937,8 @@ func getKubeVirtDevicePluginPod() *v1.Pod {
 	}
 
 	return p
+}
+
+func isIntegral(cpuRequest int) bool {
+	return (cpuRequest % 1000) == 0
 }

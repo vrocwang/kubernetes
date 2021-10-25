@@ -88,16 +88,37 @@ func TestFIFOWithRemoveMultipleRequestsInArrivalOrder(t *testing.T) {
 		removeFn = append(removeFn, list.Enqueue(arrival[i]))
 	}
 
-	dequeued := make([]*request, 0)
-	for _, f := range removeFn {
-		dequeued = append(dequeued, f())
+	expected := append([]*request{}, arrival...)
+	for idx, f := range removeFn {
+		if a := f(); a != arrival[idx] {
+			t.Errorf("Removal %d returned %v instead of expected pointer", idx, a)
+		}
+		if a := f(); a != nil {
+			t.Errorf("Redundant removal %d returned %v instead of expected nil", idx, a)
+		}
+		expected = expected[1:]
+		actual := walkAll(list)
+		verifyOrder(t, expected, actual)
 	}
 
 	if list.Length() != 0 {
 		t.Errorf("Expected length: %d, but got: %d)", 0, list.Length())
 	}
+}
 
-	verifyOrder(t, arrival, dequeued)
+func TestFIFORemoveFromFIFOFunc(t *testing.T) {
+	list := newRequestFIFO()
+	reqWant := &request{}
+	removeFn := list.Enqueue(reqWant)
+
+	reqGot := removeFn()
+	if reqWant != reqGot {
+		t.Errorf("Expected request identity: %p, but got: %p)", reqWant, reqGot)
+	}
+
+	if got := removeFn(); got != nil {
+		t.Errorf("Expected a nil request, but got: %v)", got)
+	}
 }
 
 func TestFIFOWithRemoveMultipleRequestsInRandomOrder(t *testing.T) {
@@ -109,19 +130,25 @@ func TestFIFOWithRemoveMultipleRequestsInRandomOrder(t *testing.T) {
 		removeFn = append(removeFn, list.Enqueue(arrival[i]))
 	}
 
-	dequeued := make([]*request, 0)
+	expected := append([]*request{}, arrival...)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	randomIndices := r.Perm(len(removeFn))
-	t.Logf("Random remove order: %v", randomIndices)
-	for i := range randomIndices {
-		dequeued = append(dequeued, removeFn[i]())
+	for range arrival {
+		idx := r.Intn(len(expected))
+		t.Logf("Removing random index %d", idx)
+		if e, a := expected[idx], removeFn[idx](); e != a {
+			t.Errorf("Removal of %d returned %v instead of expected pointer %v", idx, a, e)
+		}
+		if e, a := (*request)(nil), removeFn[idx](); e != a {
+			t.Errorf("Redundant removal of %d returned %v instead of expected nil pointer", idx, a)
+		}
+		expected = append(expected[:idx], expected[idx+1:]...)
+		actual := walkAll(list)
+		verifyOrder(t, expected, actual)
+		removeFn = append(removeFn[:idx], removeFn[idx+1:]...)
 	}
-
 	if list.Length() != 0 {
 		t.Errorf("Expected length: %d, but got: %d)", 0, list.Length())
 	}
-
-	verifyOrder(t, arrival, dequeued)
 }
 
 func TestFIFOWithRemoveIsIdempotent(t *testing.T) {
@@ -153,12 +180,13 @@ func TestFIFOWithRemoveIsIdempotent(t *testing.T) {
 }
 
 func TestFIFOQueueWorkEstimate(t *testing.T) {
+	qs := &queueSet{estimatedServiceDuration: time.Second}
 	list := newRequestFIFO()
 
 	update := func(we *queueSum, req *request, multiplier int) {
 		we.InitialSeatsSum += multiplier * req.InitialSeats()
 		we.MaxSeatsSum += multiplier * req.MaxSeats()
-		we.AdditionalSeatSecondsSum += SeatSeconds(multiplier) * req.AdditionalSeatSeconds()
+		we.TotalWorkSum += SeatSeconds(multiplier) * req.totalWork()
 	}
 
 	assert := func(t *testing.T, want, got *queueSum) {
@@ -168,11 +196,11 @@ func TestFIFOQueueWorkEstimate(t *testing.T) {
 	}
 
 	newRequest := func(initialSeats, finalSeats uint, additionalLatency time.Duration) *request {
-		return &request{workEstimate: fcrequest.WorkEstimate{
+		return &request{workEstimate: qs.completeWorkEstimate(&fcrequest.WorkEstimate{
 			InitialSeats:      initialSeats,
 			FinalSeats:        finalSeats,
 			AdditionalLatency: additionalLatency,
-		}}
+		})}
 	}
 	arrival := []*request{
 		newRequest(1, 3, time.Second),

@@ -154,8 +154,6 @@ type JobSpec struct {
 	// guarantees (e.g. finalizers) will be honored. If this field is unset,
 	// the Job won't be automatically deleted. If this field is set to zero,
 	// the Job becomes eligible to be deleted immediately after it finishes.
-	// This field is alpha-level and is only honored by servers that enable the
-	// TTLAfterFinished feature.
 	// +optional
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty" protobuf:"varint,8,opt,name=ttlSecondsAfterFinished"`
 
@@ -260,8 +258,9 @@ type JobStatus struct {
 	// (3) Remove the pod UID from the arrays while increasing the corresponding
 	//     counter.
 	//
-	// This field is alpha-level. The job controller only makes use of this field
-	// when the feature gate JobTrackingWithFinalizers is enabled.
+	// This field is beta-level. The job controller only makes use of this field
+	// when the feature gate JobTrackingWithFinalizers is enabled (enabled
+	// by default).
 	// Old jobs might not be tracked using this field, in which case the field
 	// remains null.
 	// +optional
