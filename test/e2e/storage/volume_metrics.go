@@ -304,6 +304,12 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		}
 		key := volumeStatKeys[0]
 		kubeletKeyName := fmt.Sprintf("%s_%s", kubeletmetrics.KubeletSubsystem, key)
+		pvcName := pvcBlock.Name
+		pvcNamespace := pvcBlock.Namespace
+		if isEphemeral {
+			pvcName = ephemeral.VolumeClaimName(pod, &pod.Spec.Volumes[0])
+			pvcNamespace = pod.Namespace
+		}
 		// Poll kubelet metrics waiting for the volume to be picked up
 		// by the volume stats collector
 		var kubeMetrics e2emetrics.KubeletMetrics
@@ -316,17 +322,17 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 				framework.Logf("Error fetching kubelet metrics")
 				return false, err
 			}
-			if !findVolumeStatMetric(kubeletKeyName, pvcBlock.Namespace, pvcBlock.Name, kubeMetrics) {
+			if !findVolumeStatMetric(kubeletKeyName, pvcNamespace, pvcName, kubeMetrics) {
 				return false, nil
 			}
 			return true, nil
 		})
-		framework.ExpectNoError(waitErr, "Unable to find metric %s for PVC %s/%s", kubeletKeyName, pvcBlock.Namespace, pvcBlock.Name)
+		framework.ExpectNoError(waitErr, "Unable to find metric %s for PVC %s/%s", kubeletKeyName, pvcNamespace, pvcName)
 
 		for _, key := range volumeStatKeys {
 			kubeletKeyName := fmt.Sprintf("%s_%s", kubeletmetrics.KubeletSubsystem, key)
-			found := findVolumeStatMetric(kubeletKeyName, pvcBlock.Namespace, pvcBlock.Name, kubeMetrics)
-			framework.ExpectEqual(found, true, "PVC %s, Namespace %s not found for %s", pvcBlock.Name, pvcBlock.Namespace, kubeletKeyName)
+			found := findVolumeStatMetric(kubeletKeyName, pvcNamespace, pvcName, kubeMetrics)
+			framework.ExpectEqual(found, true, "PVC %s, Namespace %s not found for %s", pvcName, pvcNamespace, kubeletKeyName)
 		}
 
 		framework.Logf("Deleting pod %q/%q", pod.Namespace, pod.Name)
@@ -592,7 +598,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		ginkgo.It("should create unbound pv count metrics for pvc controller after creating pv only",
 			func() {
 				var err error
-				pv, err = e2epv.CreatePV(c, pv)
+				pv, err = e2epv.CreatePV(c, f.Timeouts, pv)
 				framework.ExpectNoError(err, "Error creating pv: %v", err)
 				waitForPVControllerSync(metricsGrabber, unboundPVKey, classKey)
 				validator([]map[string]int64{nil, {className: 1}, nil, nil})
@@ -610,7 +616,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 		ginkgo.It("should create bound pv/pvc count metrics for pvc controller after creating both pv and pvc",
 			func() {
 				var err error
-				pv, pvc, err = e2epv.CreatePVPVC(c, pvConfig, pvcConfig, ns, true)
+				pv, pvc, err = e2epv.CreatePVPVC(c, f.Timeouts, pvConfig, pvcConfig, ns, true)
 				framework.ExpectNoError(err, "Error creating pv pvc: %v", err)
 				waitForPVControllerSync(metricsGrabber, boundPVKey, classKey)
 				waitForPVControllerSync(metricsGrabber, boundPVCKey, namespaceKey)
@@ -621,7 +627,7 @@ var _ = utils.SIGDescribe("[Serial] Volume metrics", func() {
 			func() {
 				var err error
 				dimensions := []string{pluginNameKey, volumeModeKey}
-				pv, err = e2epv.CreatePV(c, pv)
+				pv, err = e2epv.CreatePV(c, f.Timeouts, pv)
 				framework.ExpectNoError(err, "Error creating pv: %v", err)
 				waitForPVControllerSync(metricsGrabber, totalPVKey, pluginNameKey)
 				controllerMetrics, err := metricsGrabber.GrabFromControllerManager()

@@ -374,7 +374,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(uss.expectedExecuting) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_current_executing_requests [ALPHA] Number of requests currently executing in the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_current_executing_requests [ALPHA] Number of requests in regular execution phase in the API Priority and Fairness system
 				# TYPE apiserver_flowcontrol_current_executing_requests gauge
 ` + uss.expectedExecuting
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_current_executing_requests")
@@ -386,7 +386,7 @@ func (uss *uniformScenarioState) finalReview() {
 	}
 	if uss.evalExecutingMetrics && len(uss.expectedConcurrencyInUse) > 0 {
 		e := `
-				# HELP apiserver_flowcontrol_request_concurrency_in_use [ALPHA] Concurrency (number of seats) occupided by the currently executing requests in the API Priority and Fairness system
+				# HELP apiserver_flowcontrol_request_concurrency_in_use [ALPHA] Concurrency (number of seats) occupided by the currently executing (all phases count) requests in the API Priority and Fairness system
 				# TYPE apiserver_flowcontrol_request_concurrency_in_use gauge
 ` + uss.expectedConcurrencyInUse
 		err := metrics.GatherAndCompare(e, "apiserver_flowcontrol_request_concurrency_in_use")
@@ -1173,13 +1173,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 1})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 1})},
 					),
@@ -1196,7 +1196,7 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 1})},
 					),
@@ -1213,13 +1213,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 50})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 25})},
 					),
@@ -1236,13 +1236,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 10})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 25})},
 					),
@@ -1259,13 +1259,13 @@ func TestFindDispatchQueueLocked(t *testing.T) {
 			robinIndex:       -1,
 			queues: []*queue{
 				{
-					nextDispatchR: SeatsTimesDuration(1, 200*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 200*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 10})},
 					),
 				},
 				{
-					nextDispatchR: SeatsTimesDuration(1, 100*time.Second),
+					nextDispatchR: fcrequest.SeatsTimesDuration(1, 100*time.Second),
 					requests: newFIFO(
 						&request{workEstimate: qs0.completeWorkEstimate(&fcrequest.WorkEstimate{InitialSeats: 25})},
 					),
@@ -1446,7 +1446,7 @@ func TestRequestWork(t *testing.T) {
 	}
 
 	got := request.totalWork()
-	want := SeatsTimesDuration(3, 2*time.Second) + SeatsTimesDuration(50, 70*time.Second)
+	want := fcrequest.SeatsTimesDuration(3, 2*time.Second) + fcrequest.SeatsTimesDuration(50, 70*time.Second)
 	if want != got {
 		t.Errorf("Expected totalWork: %v, but got: %v", want, got)
 	}

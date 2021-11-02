@@ -231,6 +231,7 @@ define TEST_E2E_NODE_HELP_INFO
 #  IMAGE_SERVICE_ENDPOINT: remote image endpoint to connect to, to prepull images.
 #    Used when RUNTIME is set to "remote".
 #  IMAGE_CONFIG_FILE: path to a file containing image configuration.
+#  IMAGE_CONFIG_DIR: path to image config files.
 #  SYSTEM_SPEC_NAME: The name of the system spec to be used for validating the
 #    image in the node conformance test. The specs are located at
 #    test/e2e_node/system/specs/. For example, "SYSTEM_SPEC_NAME=gke" will use
@@ -254,6 +255,7 @@ define TEST_E2E_NODE_HELP_INFO
 #  GUBERNATOR: For REMOTE=true only. Produce link to Gubernator to view logs.
 #    Defaults to false.
 #  TEST_SUITE: For REMOTE=true only. Test suite to use. Defaults to "default".
+#  SSH_KEY: For REMOTE=true only. Path to SSH key to use.
 #
 # Example:
 #   make test-e2e-node FOCUS=Kubelet SKIP=container
