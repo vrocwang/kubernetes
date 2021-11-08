@@ -26,7 +26,7 @@ require (
 	github.com/clusterhq/flocker-go v0.0.0-20160920122132-2b8b7259d313
 	github.com/container-storage-interface/spec v1.5.0
 	github.com/containernetworking/cni v0.8.1
-	github.com/coredns/corefile-migration v1.0.12
+	github.com/coredns/corefile-migration v1.0.14
 	github.com/coreos/go-oidc v2.1.0+incompatible
 	github.com/coreos/go-systemd/v22 v22.3.2
 	github.com/cpuguy83/go-md2man/v2 v2.0.0
@@ -133,7 +133,7 @@ require (
 	k8s.io/sample-apiserver v0.0.0
 	k8s.io/system-validators v1.5.0
 	k8s.io/utils v0.0.0-20210930125809-cb0fa318a74b
-	sigs.k8s.io/structured-merge-diff/v4 v4.1.2
+	sigs.k8s.io/structured-merge-diff/v4 v4.2.0
 	sigs.k8s.io/yaml v1.2.0
 )
 
@@ -206,7 +206,7 @@ replace (
 	github.com/containerd/typeurl => github.com/containerd/typeurl v1.0.2
 	github.com/containernetworking/cni => github.com/containernetworking/cni v0.8.1
 	github.com/coredns/caddy => github.com/coredns/caddy v1.1.0
-	github.com/coredns/corefile-migration => github.com/coredns/corefile-migration v1.0.12
+	github.com/coredns/corefile-migration => github.com/coredns/corefile-migration v1.0.14
 	github.com/coreos/go-oidc => github.com/coreos/go-oidc v2.1.0+incompatible
 	github.com/coreos/go-semver => github.com/coreos/go-semver v0.3.0
 	github.com/coreos/go-systemd/v22 => github.com/coreos/go-systemd/v22 v22.3.2
@@ -516,12 +516,12 @@ replace (
 	modernc.org/strutil => modernc.org/strutil v1.0.0
 	modernc.org/xc => modernc.org/xc v1.0.0
 	rsc.io/pdf => rsc.io/pdf v0.1.1
-	sigs.k8s.io/apiserver-network-proxy/konnectivity-client => sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.23
+	sigs.k8s.io/apiserver-network-proxy/konnectivity-client => sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.25
 	sigs.k8s.io/json => sigs.k8s.io/json v0.0.0-20211020170558-c049b76a60c6
 	sigs.k8s.io/kustomize/api => sigs.k8s.io/kustomize/api v0.8.11
 	sigs.k8s.io/kustomize/cmd/config => sigs.k8s.io/kustomize/cmd/config v0.9.13
 	sigs.k8s.io/kustomize/kustomize/v4 => sigs.k8s.io/kustomize/kustomize/v4 v4.2.0
 	sigs.k8s.io/kustomize/kyaml => sigs.k8s.io/kustomize/kyaml v0.11.0
-	sigs.k8s.io/structured-merge-diff/v4 => sigs.k8s.io/structured-merge-diff/v4 v4.1.2
+	sigs.k8s.io/structured-merge-diff/v4 => sigs.k8s.io/structured-merge-diff/v4 v4.2.0
 	sigs.k8s.io/yaml => sigs.k8s.io/yaml v1.2.0
 )

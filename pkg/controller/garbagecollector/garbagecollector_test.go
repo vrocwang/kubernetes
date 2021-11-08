@@ -60,6 +60,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/controller-manager/pkg/informerfactory"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	c "k8s.io/kubernetes/pkg/controller"
 )
 
 type testRESTMapper struct {
@@ -114,9 +115,9 @@ func TestGarbageCollectorConstruction(t *testing.T) {
 	assert.Equal(t, 1, len(gc.dependencyGraphBuilder.monitors))
 
 	// Make sure the syncing mechanism also works after Run() has been called
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	go gc.Run(1, stopCh)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go gc.Run(ctx, 1)
 
 	err = gc.resyncMonitors(twoResources)
 	if err != nil {
@@ -287,7 +288,7 @@ func TestAttemptToDeleteItem(t *testing.T) {
 		owners:  nil,
 		virtual: true,
 	}
-	err := gc.attemptToDeleteItem(item)
+	err := gc.attemptToDeleteItem(context.TODO(), item)
 	if err != nil {
 		t.Errorf("Unexpected Error: %v", err)
 	}
@@ -546,12 +547,12 @@ func TestAbsentOwnerCache(t *testing.T) {
 	gc := setupGC(t, clientConfig)
 	defer close(gc.stop)
 	gc.absentOwnerCache = NewReferenceCache(2)
-	gc.attemptToDeleteItem(podToGCNode(rc1Pod1))
-	gc.attemptToDeleteItem(podToGCNode(rc2Pod1))
+	gc.attemptToDeleteItem(context.TODO(), podToGCNode(rc1Pod1))
+	gc.attemptToDeleteItem(context.TODO(), podToGCNode(rc2Pod1))
 	// rc1 should already be in the cache, no request should be sent. rc1 should be promoted in the UIDCache
-	gc.attemptToDeleteItem(podToGCNode(rc1Pod2))
+	gc.attemptToDeleteItem(context.TODO(), podToGCNode(rc1Pod2))
 	// after this call, rc2 should be evicted from the UIDCache
-	gc.attemptToDeleteItem(podToGCNode(rc3Pod1))
+	gc.attemptToDeleteItem(context.TODO(), podToGCNode(rc3Pod1))
 	// check cache
 	if !gc.absentOwnerCache.Has(objectReference{Namespace: "ns1", OwnerReference: metav1.OwnerReference{Kind: "ReplicationController", Name: "rc1", UID: "1", APIVersion: "v1"}}) {
 		t.Errorf("expected rc1 to be in the cache")
@@ -594,8 +595,11 @@ func TestDeleteOwnerRefPatch(t *testing.T) {
 			},
 		},
 	}
-	patch := deleteOwnerRefStrategicMergePatch("100", "2", "3")
-	patched, err := strategicpatch.StrategicMergePatch(originalData, patch, v1.Pod{})
+	p, err := c.GenerateDeleteOwnerRefStrategicMergeBytes("100", []types.UID{"2", "3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched, err := strategicpatch.StrategicMergePatch(originalData, p, v1.Pod{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -851,9 +855,9 @@ func TestGarbageCollectorSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	go gc.Run(1, stopCh)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go gc.Run(ctx, 1)
 	// The pseudo-code of GarbageCollector.Sync():
 	// GarbageCollector.Sync(client, period, stopCh):
 	//    wait.Until() loops with `period` until the `stopCh` is closed :
@@ -868,7 +872,7 @@ func TestGarbageCollectorSync(t *testing.T) {
 	// The 1s sleep in the test allows GetDeletableResources and
 	// gc.resyncMonitors to run ~5 times to ensure the changes to the
 	// fakeDiscoveryClient are picked up.
-	go gc.Sync(fakeDiscoveryClient, 200*time.Millisecond, stopCh)
+	go gc.Sync(fakeDiscoveryClient, 200*time.Millisecond, ctx.Done())
 
 	// Wait until the sync discovers the initial resources
 	time.Sleep(1 * time.Second)
@@ -2434,7 +2438,7 @@ func processAttemptToDelete(count int) step {
 			if count <= 0 {
 				// process all
 				for ctx.gc.dependencyGraphBuilder.attemptToDelete.Len() != 0 {
-					ctx.gc.attemptToDeleteWorker()
+					ctx.gc.attemptToDeleteWorker(context.TODO())
 				}
 			} else {
 				for i := 0; i < count; i++ {
@@ -2442,7 +2446,7 @@ func processAttemptToDelete(count int) step {
 						ctx.t.Errorf("expected at least %d pending changes, got %d", count, i+1)
 						return
 					}
-					ctx.gc.attemptToDeleteWorker()
+					ctx.gc.attemptToDeleteWorker(context.TODO())
 				}
 			}
 		},

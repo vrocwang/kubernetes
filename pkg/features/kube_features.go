@@ -330,9 +330,10 @@ const (
 	// Disables the OpenStack Cinder in-tree driver.
 	InTreePluginOpenStackUnregister featuregate.Feature = "InTreePluginOpenStackUnregister"
 
-	// owner: @huffmanca
+	// owner: @huffmanca, @dobsonj
 	// alpha: v1.19
 	// beta: v1.20
+	// GA: v1.23
 	//
 	// Determines if a CSI Driver supports applying fsGroup.
 	CSIVolumeFSGroupPolicy featuregate.Feature = "CSIVolumeFSGroupPolicy"
@@ -413,15 +414,6 @@ const (
 	//
 	// Enable all logic related to the PodDisruptionBudget API object in policy
 	PodDisruptionBudget featuregate.Feature = "PodDisruptionBudget"
-
-	// owner: @alaypatel07, @soltysh
-	// alpha: v1.20
-	// beta: v1.21
-	// GA: v1.22
-	//
-	// CronJobControllerV2 controls whether the controller manager starts old cronjob
-	// controller or new one which is implemented with informers and delaying queue
-	CronJobControllerV2 featuregate.Feature = "CronJobControllerV2"
 
 	// owner: @smarterclayton
 	// alpha: v1.21
@@ -712,6 +704,7 @@ const (
 
 	// owner: @liggitt, @tallclair, sig-auth
 	// alpha: v1.22
+	// beta: v1.23
 	//
 	// Enables the PodSecurity admission plugin
 	PodSecurity featuregate.Feature = "PodSecurity"
@@ -791,6 +784,14 @@ const (
 	// node affinity, selector and tolerations. This is allowed only for suspended jobs
 	// that have never been unsuspended before.
 	JobMutableNodeSchedulingDirectives featuregate.Feature = "JobMutableNodeSchedulingDirectives"
+
+	// owner: @haircommander
+	// kep: http://kep.k8s.io/2364
+	// alpha: v1.23
+	//
+	// Configures the Kubelet to use the CRI to populate pod and container stats, instead of supplimenting with stats from cAdvisor.
+	// Requires the CRI implementation supports supplying the required stats.
+	PodAndContainerStatsFromCRI featuregate.Feature = "PodAndContainerStatsFromCRI"
 )
 
 func init() {
@@ -835,7 +836,7 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	CSIStorageCapacity:                             {Default: true, PreRelease: featuregate.Beta},
 	CSIServiceAccountToken:                         {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.23
 	GenericEphemeralVolume:                         {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.25
-	CSIVolumeFSGroupPolicy:                         {Default: true, PreRelease: featuregate.Beta},
+	CSIVolumeFSGroupPolicy:                         {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.25
 	VolumeSubpath:                                  {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.25
 	RuntimeClass:                                   {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.23
 	NetworkPolicyEndPort:                           {Default: true, PreRelease: featuregate.Beta},
@@ -856,7 +857,6 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	EndpointSliceNodeName:                          {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, //remove in 1.25
 	WindowsEndpointSliceProxying:                   {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.25
 	PodDisruptionBudget:                            {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.25
-	CronJobControllerV2:                            {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.23
 	DaemonSetUpdateSurge:                           {Default: true, PreRelease: featuregate.Beta},                    // on by default in 1.22
 	ImmutableEphemeralVolumes:                      {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.24
 	HugePageStorageMediumSize:                      {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.24
@@ -895,7 +895,7 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	StatefulSetMinReadySeconds:                     {Default: true, PreRelease: featuregate.Beta},
 	ExpandedDNSConfig:                              {Default: false, PreRelease: featuregate.Alpha},
 	SeccompDefault:                                 {Default: false, PreRelease: featuregate.Alpha},
-	PodSecurity:                                    {Default: false, PreRelease: featuregate.Alpha},
+	PodSecurity:                                    {Default: true, PreRelease: featuregate.Beta},
 	ReadWriteOncePod:                               {Default: false, PreRelease: featuregate.Alpha},
 	CSRDuration:                                    {Default: true, PreRelease: featuregate.Beta},
 	DelegateFSGroupToCSIDriver:                     {Default: false, PreRelease: featuregate.Alpha},
@@ -907,6 +907,7 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	CPUManagerPolicyBetaOptions:                    {Default: true, PreRelease: featuregate.Beta},
 	JobMutableNodeSchedulingDirectives:             {Default: true, PreRelease: featuregate.Beta},
 	IdentifyPodOS:                                  {Default: false, PreRelease: featuregate.Alpha},
+	PodAndContainerStatsFromCRI:                    {Default: false, PreRelease: featuregate.Alpha},
 
 	// inherited features from generic apiserver, relisted here to get a conflict if it is changed
 	// unintentionally on either side:

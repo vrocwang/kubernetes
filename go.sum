@@ -114,8 +114,8 @@ github.com/containernetworking/cni v0.8.1 h1:7zpDnQ3T3s4ucOuJ/ZCLrYBxzkg0AELFfII
 github.com/containernetworking/cni v0.8.1/go.mod h1:LGwApLUm2FpoOfxTDEeq8T9ipbpZ61X79hmU3w8FmsY=
 github.com/coredns/caddy v1.1.0 h1:ezvsPrT/tA/7pYDBZxu0cT0VmWk75AfIaf6GSYCNMf0=
 github.com/coredns/caddy v1.1.0/go.mod h1:A6ntJQlAWuQfFlsd9hvigKbo2WS0VUs2l1e2F+BawD4=
-github.com/coredns/corefile-migration v1.0.12 h1:TJGATo0YLQJVIKJZLajXE1IrhRFtYTR1cYsGIT1YNEk=
-github.com/coredns/corefile-migration v1.0.12/go.mod h1:NJOI8ceUF/NTgEwtjD+TUq3/BnH/GF7WAM3RzCa3hBo=
+github.com/coredns/corefile-migration v1.0.14 h1:Tz3WZhoj2NdP8drrQH86NgnCng+VrPjNeg2Oe1ALKag=
+github.com/coredns/corefile-migration v1.0.14/go.mod h1:XnhgULOEouimnzgn0t4WPuFDN2/PJQcTxdWKC5eXNGE=
 github.com/coreos/go-oidc v2.1.0+incompatible h1:sdJrfw8akMnCuUlaZU3tE/uYXFgfqom8DBE9so9EBsM=
 github.com/coreos/go-oidc v2.1.0+incompatible/go.mod h1:CgnwVTmzoESiwO9qyAFEMiHoZ1nMCKZlZ9V6mm3/LKc=
 github.com/coreos/go-semver v0.3.0 h1:wkHLiw0WNATZnSG7epLsujiMCgPAc9xhjJ4tgnAxmfM=
@@ -591,8 +591,8 @@ modernc.org/mathutil v1.0.0/go.mod h1:wU0vUrJsVWBZ4P6e7xtFJEhFSNsfRLJ8H458uRjg03
 modernc.org/strutil v1.0.0/go.mod h1:lstksw84oURvj9y3tn8lGvRxyRC1S2+g5uuIzNfIOBs=
 modernc.org/xc v1.0.0/go.mod h1:mRNCo0bvLjGhHO9WsyuKVU4q0ceiDDDoEeWDJHrNx8I=
 rsc.io/pdf v0.1.1/go.mod h1:n8OzWcQ6Sp37PL01nO98y4iUCRdTGarVfzxY20ICaU4=
-sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.23 h1:KX/bypVQgavRW0Ny1pteaRP2M/xor+7leXt4Mo4gp4s=
-sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.23/go.mod h1:LEScyzhFmoF5pso/YSeBstl57mOzx9xlU9n85RGrDQg=
+sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.25 h1:DEQ12ZRxJjsglk5JIi5bLgpKaHihGervKmg5uryaEHw=
+sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.25/go.mod h1:Mlj9PNLmG9bZ6BHFwFKDo5afkpWyUISkb9Me0GnK66I=
 sigs.k8s.io/json v0.0.0-20211020170558-c049b76a60c6 h1:fD1pz4yfdADVNfFmcP2aBEtudwUQ1AlLnRBALr33v3s=
 sigs.k8s.io/json v0.0.0-20211020170558-c049b76a60c6/go.mod h1:p4QtZmO4uMYipTQNzagwnNoseA6OxSUutVw05NhYDRs=
 sigs.k8s.io/kustomize/api v0.8.11 h1:LzQzlq6Z023b+mBtc6v72N2mSHYmN8x7ssgbf/hv0H8=
@@ -602,7 +602,7 @@ sigs.k8s.io/kustomize/kustomize/v4 v4.2.0 h1:RKgbyHgzuHQZ35sBDzWcbnR3HBlJSYdSN0H
 sigs.k8s.io/kustomize/kustomize/v4 v4.2.0/go.mod h1:MOkR6fmhwG7hEDRXBYELTi5GSFcLwfqwzTRHW3kv5go=
 sigs.k8s.io/kustomize/kyaml v0.11.0 h1:9KhiCPKaVyuPcgOLJXkvytOvjMJLoxpjodiycb4gHsA=
 sigs.k8s.io/kustomize/kyaml v0.11.0/go.mod h1:GNMwjim4Ypgp/MueD3zXHLRJEjz7RvtPae0AwlvEMFM=
-sigs.k8s.io/structured-merge-diff/v4 v4.1.2 h1:Hr/htKFmJEbtMgS/UD0N+gtgctAqz81t3nu+sPzynno=
-sigs.k8s.io/structured-merge-diff/v4 v4.1.2/go.mod h1:j/nl6xW8vLS49O8YvXW1ocPhZawJtm+Yrr7PPRQ0Vg4=
+sigs.k8s.io/structured-merge-diff/v4 v4.2.0 h1:kDvPBbnPk+qYmkHmSo8vKGp438IASWofnbbUKDE/bv0=
+sigs.k8s.io/structured-merge-diff/v4 v4.2.0/go.mod h1:j/nl6xW8vLS49O8YvXW1ocPhZawJtm+Yrr7PPRQ0Vg4=
 sigs.k8s.io/yaml v1.2.0 h1:kr/MCeFWJWTwyaHoR9c8EjH9OumOmoF9YGiZd7lFm/Q=
 sigs.k8s.io/yaml v1.2.0/go.mod h1:yfXDCHCao9+ENCvLSE62v9VSji2MKu5jeNfTrofGhJc=
