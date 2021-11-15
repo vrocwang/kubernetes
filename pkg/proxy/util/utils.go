@@ -31,7 +31,7 @@ import (
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/events"
-	utilsysctl "k8s.io/component-helpers/node/utils/sysctl"
+	utilsysctl "k8s.io/component-helpers/node/util/sysctl"
 	helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	netutils "k8s.io/utils/net"
 
@@ -472,17 +472,29 @@ type LineBuffer struct {
 	b bytes.Buffer
 }
 
-// Write joins all words with spaces, terminates with newline and writes to buf.
-func (buf *LineBuffer) Write(words ...string) {
-	// We avoid strings.Join for performance reasons.
-	for i := range words {
-		buf.b.WriteString(words[i])
-		if i < len(words)-1 {
+// Write takes a list of arguments, each a string or []string, joins all the
+// individual strings with spaces, terminates with newline, and writes to buf.
+// Any other argument type will panic.
+func (buf *LineBuffer) Write(args ...interface{}) {
+	for i, arg := range args {
+		if i > 0 {
 			buf.b.WriteByte(' ')
-		} else {
-			buf.b.WriteByte('\n')
+		}
+		switch x := arg.(type) {
+		case string:
+			buf.b.WriteString(x)
+		case []string:
+			for j, s := range x {
+				if j > 0 {
+					buf.b.WriteByte(' ')
+				}
+				buf.b.WriteString(s)
+			}
+		default:
+			panic(fmt.Sprintf("unknown argument type: %T", x))
 		}
 	}
+	buf.b.WriteByte('\n')
 }
 
 // WriteBytes writes bytes to buffer, and terminates with newline.

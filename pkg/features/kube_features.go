@@ -341,6 +341,7 @@ const (
 	// owner: @gnufied
 	// alpha: v1.18
 	// beta: v1.20
+	// GA: v1.23
 	// Allows user to configure volume permission change policy for fsGroups when mounting
 	// a volume in a Pod.
 	ConfigurableFSGroupPolicy featuregate.Feature = "ConfigurableFSGroupPolicy"
@@ -630,6 +631,7 @@ const (
 	// kep: http://kep.k8s.io/2365
 	// alpha: v1.21
 	// beta: v1.22
+	// GA: v1.23
 	//
 	// Enable Scope and Namespace fields on IngressClassParametersReference.
 	IngressClassNamespacedParams featuregate.Feature = "IngressClassNamespacedParams"
@@ -671,6 +673,7 @@ const (
 
 	// owner: @marosset
 	// alpha: v1.22
+	// beta: v1.23
 	//
 	// Enables support for 'HostProcess' containers on Windows nodes.
 	WindowsHostProcessContainers featuregate.Feature = "WindowsHostProcessContainers"
@@ -792,6 +795,14 @@ const (
 	// Configures the Kubelet to use the CRI to populate pod and container stats, instead of supplimenting with stats from cAdvisor.
 	// Requires the CRI implementation supports supplying the required stats.
 	PodAndContainerStatsFromCRI featuregate.Feature = "PodAndContainerStatsFromCRI"
+
+	// owner: @deepakkinni @xing-yang
+	// kep: http://kep.k8s.io/2680
+	// alpha: v1.23
+	//
+	// Honor Persistent Volume Reclaim Policy when it is "Delete" irrespective of PV-PVC
+	// deletion ordering.
+	HonorPVReclaimPolicy featuregate.Feature = "HonorPVReclaimPolicy"
 )
 
 func init() {
@@ -831,7 +842,7 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	InTreePluginvSphereUnregister:                  {Default: false, PreRelease: featuregate.Alpha},
 	CSIMigrationOpenStack:                          {Default: true, PreRelease: featuregate.Beta},
 	InTreePluginOpenStackUnregister:                {Default: false, PreRelease: featuregate.Alpha},
-	ConfigurableFSGroupPolicy:                      {Default: true, PreRelease: featuregate.Beta},
+	ConfigurableFSGroupPolicy:                      {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.25
 	CSIInlineVolume:                                {Default: true, PreRelease: featuregate.Beta},
 	CSIStorageCapacity:                             {Default: true, PreRelease: featuregate.Beta},
 	CSIServiceAccountToken:                         {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.23
@@ -860,7 +871,7 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	DaemonSetUpdateSurge:                           {Default: true, PreRelease: featuregate.Beta},                    // on by default in 1.22
 	ImmutableEphemeralVolumes:                      {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.24
 	HugePageStorageMediumSize:                      {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.24
-	DownwardAPIHugePages:                           {Default: false, PreRelease: featuregate.Beta},                   // on by default in 1.22
+	DownwardAPIHugePages:                           {Default: true, PreRelease: featuregate.Beta},                    // on by default in 1.22
 	AnyVolumeDataSource:                            {Default: false, PreRelease: featuregate.Alpha},
 	DefaultPodTopologySpread:                       {Default: true, PreRelease: featuregate.Beta},
 	SetHostnameAsFQDN:                              {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, //remove in 1.24
@@ -882,14 +893,14 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	TopologyAwareHints:                             {Default: false, PreRelease: featuregate.Alpha},
 	PodAffinityNamespaceSelector:                   {Default: true, PreRelease: featuregate.Beta},
 	ServiceLoadBalancerClass:                       {Default: true, PreRelease: featuregate.Beta},
-	IngressClassNamespacedParams:                   {Default: true, PreRelease: featuregate.Beta},
+	IngressClassNamespacedParams:                   {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.24
 	ServiceInternalTrafficPolicy:                   {Default: true, PreRelease: featuregate.Beta},
 	LogarithmicScaleDown:                           {Default: true, PreRelease: featuregate.Beta},
 	SuspendJob:                                     {Default: true, PreRelease: featuregate.Beta},
 	KubeletPodResourcesGetAllocatable:              {Default: true, PreRelease: featuregate.Beta},
 	NamespaceDefaultLabelName:                      {Default: true, PreRelease: featuregate.GA, LockToDefault: true}, // remove in 1.24
 	CSIVolumeHealth:                                {Default: false, PreRelease: featuregate.Alpha},
-	WindowsHostProcessContainers:                   {Default: false, PreRelease: featuregate.Alpha},
+	WindowsHostProcessContainers:                   {Default: true, PreRelease: featuregate.Beta},
 	DisableCloudProviders:                          {Default: false, PreRelease: featuregate.Alpha},
 	DisableKubeletCloudCredentialProviders:         {Default: false, PreRelease: featuregate.Alpha},
 	StatefulSetMinReadySeconds:                     {Default: true, PreRelease: featuregate.Beta},
@@ -908,6 +919,7 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	JobMutableNodeSchedulingDirectives:             {Default: true, PreRelease: featuregate.Beta},
 	IdentifyPodOS:                                  {Default: false, PreRelease: featuregate.Alpha},
 	PodAndContainerStatsFromCRI:                    {Default: false, PreRelease: featuregate.Alpha},
+	HonorPVReclaimPolicy:                           {Default: false, PreRelease: featuregate.Alpha},
 
 	// inherited features from generic apiserver, relisted here to get a conflict if it is changed
 	// unintentionally on either side:

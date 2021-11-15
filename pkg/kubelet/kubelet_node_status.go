@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	cloudprovider "k8s.io/cloud-provider"
 	cloudproviderapi "k8s.io/cloud-provider/api"
+	nodeutil "k8s.io/component-helpers/node/util"
 	"k8s.io/klog/v2"
 	kubeletapis "k8s.io/kubelet/pkg/apis"
 	k8s_api_v1 "k8s.io/kubernetes/pkg/apis/core/v1"
@@ -41,7 +42,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/nodestatus"
 	"k8s.io/kubernetes/pkg/kubelet/util"
-	nodeutil "k8s.io/kubernetes/pkg/util/node"
 	taintutil "k8s.io/kubernetes/pkg/util/taints"
 	volutil "k8s.io/kubernetes/pkg/volume/util"
 )
@@ -509,11 +509,30 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 		}
 	}
 
+	areRequiredLabelsNotPresent := false
+	osName, osLabelExists := node.Labels[v1.LabelOSStable]
+	if !osLabelExists || osName != goruntime.GOOS {
+		if len(node.Labels) == 0 {
+			node.Labels = make(map[string]string)
+		}
+		node.Labels[v1.LabelOSStable] = goruntime.GOOS
+		areRequiredLabelsNotPresent = true
+	}
+	// Set the arch if there is a mismatch
+	arch, archLabelExists := node.Labels[v1.LabelArchStable]
+	if !archLabelExists || arch != goruntime.GOARCH {
+		if len(node.Labels) == 0 {
+			node.Labels = make(map[string]string)
+		}
+		node.Labels[v1.LabelArchStable] = goruntime.GOARCH
+		areRequiredLabelsNotPresent = true
+	}
+
 	kl.setNodeStatus(node)
 
 	now := kl.clock.Now()
 	if now.Before(kl.lastStatusReportTime.Add(kl.nodeStatusReportFrequency)) {
-		if !podCIDRChanged && !nodeStatusHasChanged(&originalNode.Status, &node.Status) {
+		if !podCIDRChanged && !nodeStatusHasChanged(&originalNode.Status, &node.Status) && !areRequiredLabelsNotPresent {
 			// We must mark the volumes as ReportedInUse in volume manager's dsw even
 			// if no changes were made to the node status (no volumes were added or removed
 			// from the VolumesInUse list).
