@@ -907,12 +907,24 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: string
       default: ""
+- name: io.k8s.api.apps.v1.StatefulSetPersistentVolumeClaimRetentionPolicy
+  map:
+    fields:
+    - name: whenDeleted
+      type:
+        scalar: string
+    - name: whenScaled
+      type:
+        scalar: string
 - name: io.k8s.api.apps.v1.StatefulSetSpec
   map:
     fields:
     - name: minReadySeconds
       type:
         scalar: numeric
+    - name: persistentVolumeClaimRetentionPolicy
+      type:
+        namedType: io.k8s.api.apps.v1.StatefulSetPersistentVolumeClaimRetentionPolicy
     - name: podManagementPolicy
       type:
         scalar: string
@@ -1195,12 +1207,24 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: string
       default: ""
+- name: io.k8s.api.apps.v1beta1.StatefulSetPersistentVolumeClaimRetentionPolicy
+  map:
+    fields:
+    - name: whenDeleted
+      type:
+        scalar: string
+    - name: whenScaled
+      type:
+        scalar: string
 - name: io.k8s.api.apps.v1beta1.StatefulSetSpec
   map:
     fields:
     - name: minReadySeconds
       type:
         scalar: numeric
+    - name: persistentVolumeClaimRetentionPolicy
+      type:
+        namedType: io.k8s.api.apps.v1beta1.StatefulSetPersistentVolumeClaimRetentionPolicy
     - name: podManagementPolicy
       type:
         scalar: string
@@ -1681,12 +1705,24 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: string
       default: ""
+- name: io.k8s.api.apps.v1beta2.StatefulSetPersistentVolumeClaimRetentionPolicy
+  map:
+    fields:
+    - name: whenDeleted
+      type:
+        scalar: string
+    - name: whenScaled
+      type:
+        scalar: string
 - name: io.k8s.api.apps.v1beta2.StatefulSetSpec
   map:
     fields:
     - name: minReadySeconds
       type:
         scalar: numeric
+    - name: persistentVolumeClaimRetentionPolicy
+      type:
+        namedType: io.k8s.api.apps.v1beta2.StatefulSetPersistentVolumeClaimRetentionPolicy
     - name: podManagementPolicy
       type:
         scalar: string
@@ -4478,6 +4514,17 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: readOnly
       type:
         scalar: boolean
+- name: io.k8s.api.core.v1.GRPCAction
+  map:
+    fields:
+    - name: port
+      type:
+        scalar: numeric
+      default: 0
+    - name: service
+      type:
+        scalar: string
+      default: ""
 - name: io.k8s.api.core.v1.GitRepoVolumeSource
   map:
     fields:
@@ -5291,6 +5338,11 @@ var schemaYAML = typed.YAMLObject(`types:
           elementType:
             scalar: string
           elementRelationship: atomic
+    - name: allocatedResources
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.api.resource.Quantity
     - name: capacity
       type:
         map:
@@ -5305,6 +5357,9 @@ var schemaYAML = typed.YAMLObject(`types:
           keys:
           - type
     - name: phase
+      type:
+        scalar: string
+    - name: resizeStatus
       type:
         scalar: string
 - name: io.k8s.api.core.v1.PersistentVolumeClaimTemplate
@@ -5929,6 +5984,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: failureThreshold
       type:
         scalar: numeric
+    - name: grpc
+      type:
+        namedType: io.k8s.api.core.v1.GRPCAction
     - name: httpGet
       type:
         namedType: io.k8s.api.core.v1.HTTPGetAction

@@ -62,7 +62,7 @@ dependencies:
 
   # etcd
   - name: "etcd"
-    version: 3.5.0
+    version: 3.5.1
     refPaths:
     - path: cluster/gce/manifests/etcd.manifest
       match: etcd_docker_tag|etcd_version
@@ -75,6 +75,8 @@ dependencies:
       match: quay.io/coreos/etcd
     - path: test/e2e/framework/nodes_util.go
       match: const etcdImage
+    - path: test/utils/image/manifest.go
+      match: configs\[Etcd\] = Config{list\.GcEtcdRegistry, "etcd", "\d+\.\d+.\d+(-(alpha|beta|rc).\d+)?(-\d+)?"}
 
   - name: "etcd-image"
     version: 3.5.1
