@@ -29,7 +29,7 @@ import (
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/keyutil"
 
-	pkiutil "k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
 )
 
 // certificateReadWriter defines the behavior of a component that
@@ -82,10 +82,8 @@ func (rw *pkiCertificateReadWriter) Read() (*x509.Certificate, error) {
 		return nil, errors.Wrapf(err, "failed to load existing certificate %s", rw.baseName)
 	}
 
-	if len(certs) != 1 {
-		return nil, errors.Errorf("wanted exactly one certificate, got %d", len(certs))
-	}
-
+	// Safely pick the first one because the sender's certificate must come first in the list.
+	// For details, see: https://www.rfc-editor.org/rfc/rfc4346#section-7.4.2
 	return certs[0], nil
 }
 
@@ -145,9 +143,9 @@ func (rw *kubeConfigReadWriter) Read() (*x509.Certificate, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to load existing certificate %s", rw.baseName)
 	}
-	if len(caCerts) != 1 {
-		return nil, errors.Errorf("wanted exactly one certificate, got %d", len(caCerts))
-	}
+
+	// Safely pick the first one because the sender's certificate must come first in the list.
+	// For details, see: https://www.rfc-editor.org/rfc/rfc4346#section-7.4.2
 	rw.caCert = caCerts[0]
 
 	// get current context
@@ -177,7 +175,7 @@ func (rw *kubeConfigReadWriter) Read() (*x509.Certificate, error) {
 		return nil, errors.Errorf("kubeConfig file %s does not have an embedded client certificate", rw.kubeConfigFilePath)
 	}
 
-	// parse the client certificate, retrive the cert config and then renew it
+	// parse the client certificate, retrieve the cert config and then renew it
 	certs, err := certutil.ParseCertsPEM(authInfo.ClientCertificateData)
 	if err != nil {
 		return nil, errors.Wrapf(err, "kubeConfig file %s does not contain a valid client certificate", rw.kubeConfigFilePath)

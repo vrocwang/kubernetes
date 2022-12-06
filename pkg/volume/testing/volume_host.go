@@ -64,6 +64,7 @@ type fakeVolumeHost struct {
 	nodeLabels             map[string]string
 	nodeName               string
 	subpather              subpath.Interface
+	node                   *v1.Node
 	csiDriverLister        storagelistersv1.CSIDriverLister
 	volumeAttachmentLister storagelistersv1.VolumeAttachmentLister
 	informerFactory        informers.SharedInformerFactory
@@ -117,6 +118,10 @@ func (f *fakeVolumeHost) GetPodsDir() string {
 	return filepath.Join(f.rootDir, "pods")
 }
 
+func (f *fakeVolumeHost) GetHostIDsForPod(pod *v1.Pod, containerUID, containerGID *int64) (hostUID, hostGID *int64, err error) {
+	return containerUID, containerGID, nil
+}
+
 func (f *fakeVolumeHost) GetPodVolumeDir(podUID types.UID, pluginName, volumeName string) string {
 	return filepath.Join(f.rootDir, "pods", string(podUID), "volumes", pluginName, volumeName)
 }
@@ -151,6 +156,10 @@ func (f *fakeVolumeHost) GetFilteredDialOptions() *proxyutil.FilteredDialOptions
 
 func (f *fakeVolumeHost) GetPluginMgr() *VolumePluginMgr {
 	return f.pluginMgr
+}
+
+func (f *fakeVolumeHost) GetAttachedVolumesFromNodeStatus() (map[v1.UniqueVolumeName]string, error) {
+	return map[v1.UniqueVolumeName]string{}, nil
 }
 
 func (f *fakeVolumeHost) NewWrapperMounter(volName string, spec Spec, pod *v1.Pod, opts VolumeOptions) (Mounter, error) {
@@ -305,25 +314,25 @@ type fakeKubeletVolumeHost struct {
 var _ KubeletVolumeHost = &fakeKubeletVolumeHost{}
 var _ FakeVolumeHost = &fakeKubeletVolumeHost{}
 
-func NewFakeKubeletVolumeHost(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin) FakeVolumeHost {
+func NewFakeKubeletVolumeHost(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin) *fakeKubeletVolumeHost {
 	return newFakeKubeletVolumeHost(t, rootDir, kubeClient, plugins, nil, nil, "", nil, nil)
 }
 
-func NewFakeKubeletVolumeHostWithCloudProvider(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, cloud cloudprovider.Interface) FakeVolumeHost {
+func NewFakeKubeletVolumeHostWithCloudProvider(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, cloud cloudprovider.Interface) *fakeKubeletVolumeHost {
 	return newFakeKubeletVolumeHost(t, rootDir, kubeClient, plugins, cloud, nil, "", nil, nil)
 }
 
-func NewFakeKubeletVolumeHostWithNodeLabels(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, labels map[string]string) FakeVolumeHost {
+func NewFakeKubeletVolumeHostWithNodeLabels(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, labels map[string]string) *fakeKubeletVolumeHost {
 	volHost := newFakeKubeletVolumeHost(t, rootDir, kubeClient, plugins, nil, nil, "", nil, nil)
 	volHost.nodeLabels = labels
 	return volHost
 }
 
-func NewFakeKubeletVolumeHostWithCSINodeName(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, nodeName string, driverLister storagelistersv1.CSIDriverLister, volumeAttachLister storagelistersv1.VolumeAttachmentLister) FakeVolumeHost {
+func NewFakeKubeletVolumeHostWithCSINodeName(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, nodeName string, driverLister storagelistersv1.CSIDriverLister, volumeAttachLister storagelistersv1.VolumeAttachmentLister) *fakeKubeletVolumeHost {
 	return newFakeKubeletVolumeHost(t, rootDir, kubeClient, plugins, nil, nil, nodeName, driverLister, volumeAttachLister)
 }
 
-func NewFakeKubeletVolumeHostWithMounterFSType(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, pathToTypeMap map[string]hostutil.FileType) FakeVolumeHost {
+func NewFakeKubeletVolumeHostWithMounterFSType(t *testing.T, rootDir string, kubeClient clientset.Interface, plugins []VolumePlugin, pathToTypeMap map[string]hostutil.FileType) *fakeKubeletVolumeHost {
 	return newFakeKubeletVolumeHost(t, rootDir, kubeClient, plugins, nil, pathToTypeMap, "", nil, nil)
 }
 
@@ -351,6 +360,11 @@ func newFakeKubeletVolumeHost(t *testing.T, rootDir string, kubeClient clientset
 	return host
 }
 
+func (f *fakeKubeletVolumeHost) WithNode(node *v1.Node) *fakeKubeletVolumeHost {
+	f.node = node
+	return f
+}
+
 func (f *fakeKubeletVolumeHost) SetKubeletError(err error) {
 	f.mux.Lock()
 	defer f.mux.Unlock()
@@ -360,6 +374,17 @@ func (f *fakeKubeletVolumeHost) SetKubeletError(err error) {
 
 func (f *fakeKubeletVolumeHost) GetInformerFactory() informers.SharedInformerFactory {
 	return f.informerFactory
+}
+
+func (f *fakeKubeletVolumeHost) GetAttachedVolumesFromNodeStatus() (map[v1.UniqueVolumeName]string, error) {
+	result := map[v1.UniqueVolumeName]string{}
+	if f.node != nil {
+		for _, av := range f.node.Status.VolumesAttached {
+			result[av.Name] = av.DevicePath
+		}
+	}
+
+	return result, nil
 }
 
 func (f *fakeKubeletVolumeHost) CSIDriverLister() storagelistersv1.CSIDriverLister {

@@ -3,12 +3,11 @@
 approvers:
   - saad-ali
   - thockin
-  - davidz627
 reviewers:
   - saad-ali
   - jsafrane
   - jingxu97
   - gnufied
   - msau42
-  - verult
+emeritus_approvers:
   - davidz627

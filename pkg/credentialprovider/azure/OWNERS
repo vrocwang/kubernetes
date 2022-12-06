@@ -2,13 +2,12 @@
 
 approvers:
   - andyzhangx
-  - brendandburns
   - feiskyer
-  - karataliu
   - khenidak
 reviewers:
   - andyzhangx
-  - brendandburns
   - feiskyer
-  - karataliu
   - khenidak
+emeritus_approvers:
+  - karataliu
+  - brendandburns

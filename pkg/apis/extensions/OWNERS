@@ -6,12 +6,10 @@ reviewers:
   - smarterclayton
   - wojtek-t
   - deads2k
-  - brendandburns
   - derekwaynecarr
   - caesarxuchao
   - mikedanese
   - liggitt
-  - pmorie
   - sttts
   - saad-ali
   - janetkuo
@@ -20,13 +18,6 @@ reviewers:
   - tallclair
   - mwielgus
   - soltysh
-  - piosz
   - dims
-  - errordeveloper
-  - rootfs
-  - resouer
-  - therc
-  - pweil-
-  - lukaszo
 labels:
   - sig/apps

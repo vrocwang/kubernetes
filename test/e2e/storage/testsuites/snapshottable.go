@@ -22,24 +22,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/component-helpers/storage/ephemeral"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eoutput "k8s.io/kubernetes/test/e2e/framework/pod/output"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2evolume "k8s.io/kubernetes/test/e2e/framework/volume"
 	storageframework "k8s.io/kubernetes/test/e2e/storage/framework"
-	"k8s.io/kubernetes/test/e2e/storage/utils"
 	storageutils "k8s.io/kubernetes/test/e2e/storage/utils"
+	admissionapi "k8s.io/pod-security-admission/api"
 )
 
 // data file name
@@ -106,13 +108,13 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 	// Beware that it also registers an AfterEach which renders f unusable. Any code using
 	// f must run inside an It or Context callback.
 	f := framework.NewDefaultFramework("snapshotting")
+	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelPrivileged
 
 	ginkgo.Describe("volume snapshot controller", func() {
 		var (
-			err           error
-			config        *storageframework.PerTestConfig
-			driverCleanup func()
-			cleanupSteps  []func()
+			err          error
+			config       *storageframework.PerTestConfig
+			cleanupSteps []func()
 
 			cs                  clientset.Interface
 			dc                  dynamic.Interface
@@ -123,7 +125,7 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 			claimSize           string
 			originalMntTestData string
 		)
-		init := func() {
+		init := func(ctx context.Context) {
 			sDriver, _ = driver.(storageframework.SnapshottableTestDriver)
 			dDriver, _ = driver.(storageframework.DynamicPVTestDriver)
 			cleanupSteps = make([]func(), 0)
@@ -132,8 +134,7 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 			dc = f.DynamicClient
 
 			// Now do the more expensive test initialization.
-			config, driverCleanup = driver.PrepareTest(f)
-			cleanupSteps = append(cleanupSteps, driverCleanup)
+			config = driver.PrepareTest(f)
 
 			cleanupSteps = append(cleanupSteps, func() {
 				framework.ExpectNoError(volumeResource.CleanupResource())
@@ -142,14 +143,13 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 
 			ginkgo.By("[init] starting a pod to use the claim")
 			originalMntTestData = fmt.Sprintf("hello from %s namespace", f.Namespace.Name)
-			command := fmt.Sprintf("echo '%s' > %s", originalMntTestData, datapath)
+			// After writing data to a file `sync` flushes the data from memory to disk.
+			// sync is available in the Linux and Windows versions of agnhost.
+			command := fmt.Sprintf("echo '%s' > %s; sync", originalMntTestData, datapath)
 
-			pod = StartInPodWithVolumeSource(cs, *volumeResource.VolSource, f.Namespace.Name, "pvc-snapshottable-tester", command, config.ClientNodeSelection)
-			cleanupSteps = append(cleanupSteps, func() {
-				e2epod.DeletePodWithWait(cs, pod)
-			})
+			pod = StartInPodWithVolumeSource(ctx, cs, *volumeResource.VolSource, f.Namespace.Name, "pvc-snapshottable-tester", command, config.ClientNodeSelection)
 
-			// At this point a pod is running with a PVC. How to proceed depends on which test is running.
+			// At this point a pod is created with a PVC. How to proceed depends on which test is running.
 		}
 
 		cleanup := func() {
@@ -172,11 +172,16 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 		})
 
 		ginkgo.Context("", func() {
-			ginkgo.It("should check snapshot fields, check restore correctly works, check deletion (ephemeral)", func() {
+			ginkgo.It("should check snapshot fields, check restore correctly works, check deletion (ephemeral)", func(ctx context.Context) {
 				if pattern.VolType != storageframework.GenericEphemeralVolume {
 					e2eskipper.Skipf("volume type %q is not ephemeral", pattern.VolType)
 				}
-				init()
+				init(ctx)
+
+				// delete the pod at the end of the test
+				cleanupSteps = append(cleanupSteps, func() {
+					e2epod.DeletePodWithWait(cs, pod)
+				})
 
 				// We can test snapshotting of generic
 				// ephemeral volumes by creating the snapshot
@@ -202,8 +207,6 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				cleanupSteps = append(cleanupSteps, func() {
 					framework.ExpectNoError(sr.CleanupResource(f.Timeouts))
 				})
-				vs := sr.Vs
-				vsc := sr.Vsclass
 
 				err = e2epv.WaitForPersistentVolumeClaimPhase(v1.ClaimBound, cs, pvcNamespace, pvcName, framework.Poll, f.Timeouts.ClaimProvision)
 				framework.ExpectNoError(err)
@@ -218,31 +221,12 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				_, err := cs.CoreV1().PersistentVolumes().Get(context.TODO(), pvc.Spec.VolumeName, metav1.GetOptions{})
 				framework.ExpectNoError(err)
 
-				// Get new copy of the snapshot
-				ginkgo.By("checking the snapshot")
-				vs, err = dc.Resource(storageutils.SnapshotGVR).Namespace(vs.GetNamespace()).Get(context.TODO(), vs.GetName(), metav1.GetOptions{})
-				framework.ExpectNoError(err)
-
-				// Get the bound snapshotContent
-				snapshotStatus := vs.Object["status"].(map[string]interface{})
-				snapshotContentName := snapshotStatus["boundVolumeSnapshotContentName"].(string)
-				vscontent, err := dc.Resource(storageutils.SnapshotContentGVR).Get(context.TODO(), snapshotContentName, metav1.GetOptions{})
-				framework.ExpectNoError(err)
-
-				snapshotContentSpec := vscontent.Object["spec"].(map[string]interface{})
-				volumeSnapshotRef := snapshotContentSpec["volumeSnapshotRef"].(map[string]interface{})
+				vs := sr.Vs
+				// get the snapshot and check SnapshotContent properties
+				vscontent := checkSnapshot(dc, sr, pattern)
 
 				var restoredPVC *v1.PersistentVolumeClaim
 				var restoredPod *v1.Pod
-
-				// Check SnapshotContent properties
-				ginkgo.By("checking the SnapshotContent")
-				// PreprovisionedCreatedSnapshot do not need to set volume snapshot class name
-				if pattern.SnapshotType != storageframework.PreprovisionedCreatedSnapshot {
-					framework.ExpectEqual(snapshotContentSpec["volumeSnapshotClassName"], vsc.GetName())
-				}
-				framework.ExpectEqual(volumeSnapshotRef["name"], vs.GetName())
-				framework.ExpectEqual(volumeSnapshotRef["namespace"], vs.GetNamespace())
 
 				ginkgo.By("creating a pvc from the snapshot")
 				restoredPVC = e2epv.MakePersistentVolumeClaim(e2epv.PersistentVolumeClaimConfig{
@@ -267,14 +251,14 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 					},
 				}
 
-				restoredPod = StartInPodWithVolumeSource(cs, volSrc, restoredPVC.Namespace, "restored-pvc-tester", "sleep 300", config.ClientNodeSelection)
+				restoredPod = StartInPodWithVolumeSource(ctx, cs, volSrc, restoredPVC.Namespace, "restored-pvc-tester", "sleep 300", config.ClientNodeSelection)
 				cleanupSteps = append(cleanupSteps, func() {
-					StopPod(cs, restoredPod)
+					StopPod(ctx, cs, restoredPod)
 				})
 				framework.ExpectNoError(e2epod.WaitTimeoutForPodRunningInNamespace(cs, restoredPod.Name, restoredPod.Namespace, f.Timeouts.PodStartSlow))
 				if pattern.VolType != storageframework.GenericEphemeralVolume {
 					commands := e2evolume.GenerateReadFileCmd(datapath)
-					_, err = framework.LookForStringInPodExec(restoredPod.Namespace, restoredPod.Name, commands, originalMntTestData, time.Minute)
+					_, err = e2eoutput.LookForStringInPodExec(restoredPod.Namespace, restoredPod.Name, commands, originalMntTestData, time.Minute)
 					framework.ExpectNoError(err)
 				}
 
@@ -286,60 +270,42 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				err = storageutils.DeleteSnapshotWithoutWaiting(dc, vs.GetNamespace(), vs.GetName())
 				framework.ExpectNoError(err)
 
-				// Wait for the Snapshot to be actually deleted from API server
-				err = storageutils.WaitForNamespacedGVRDeletion(dc, storageutils.SnapshotGVR, vs.GetNamespace(), vs.GetNamespace(), framework.Poll, f.Timeouts.SnapshotDelete)
-				framework.ExpectNoError(err)
-
-				switch pattern.SnapshotDeletionPolicy {
-				case storageframework.DeleteSnapshot:
-					ginkgo.By("checking the SnapshotContent has been deleted")
-					err = utils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), framework.Poll, f.Timeouts.SnapshotDelete)
-					framework.ExpectNoError(err)
-				case storageframework.RetainSnapshot:
-					ginkgo.By("checking the SnapshotContent has not been deleted")
-					err = utils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), 1*time.Second /* poll */, 30*time.Second /* timeout */)
-					framework.ExpectError(err)
-				}
+				deleteVolumeSnapshot(f, dc, sr, pattern, vscontent)
 			})
 
-			ginkgo.It("should check snapshot fields, check restore correctly works after modifying source data, check deletion (persistent)", func() {
+			ginkgo.It("should check snapshot fields, check restore correctly works after modifying source data, check deletion (persistent)", func(ctx context.Context) {
 				if pattern.VolType == storageframework.GenericEphemeralVolume {
 					e2eskipper.Skipf("volume type %q is ephemeral", pattern.VolType)
 				}
-				init()
+				init(ctx)
 
-				framework.ExpectNoError(e2epod.WaitForPodSuccessInNamespaceTimeout(cs, pod.Name, pod.Namespace, f.Timeouts.PodStartSlow))
-				pod, err = cs.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
-				framework.ExpectNoError(err, "check pod after it terminated")
-
-				// Get new copy of the claim
-				ginkgo.By("[init] checking the claim")
-				pvcName := volumeResource.Pvc.Name
-				pvcNamespace := volumeResource.Pvc.Namespace
-
-				parameters := map[string]string{}
-				sr := storageframework.CreateSnapshotResource(sDriver, config, pattern, pvcName, pvcNamespace, f.Timeouts, parameters)
-				cleanupSteps = append(cleanupSteps, func() {
-					framework.ExpectNoError(sr.CleanupResource(f.Timeouts))
-				})
-				vs := sr.Vs
-				vsc := sr.Vsclass
-
-				err = e2epv.WaitForPersistentVolumeClaimPhase(v1.ClaimBound, cs, pvcNamespace, pvcName, framework.Poll, f.Timeouts.ClaimProvision)
-				framework.ExpectNoError(err)
-
-				pvc, err = cs.CoreV1().PersistentVolumeClaims(pvcNamespace).Get(context.TODO(), pvcName, metav1.GetOptions{})
-				framework.ExpectNoError(err, "get PVC")
-				claimSize = pvc.Spec.Resources.Requests.Storage().String()
+				pvc = volumeResource.Pvc
 				sc = volumeResource.Sc
 
-				// Get the bound PV
+				// The pod should be in the Success state.
+				ginkgo.By("[init] check pod success")
+				pod, err = cs.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+				framework.ExpectNoError(err, "Failed to fetch pod: %v", err)
+				framework.ExpectNoError(e2epod.WaitForPodSuccessInNamespaceTimeout(cs, pod.Name, pod.Namespace, f.Timeouts.PodStartSlow))
+				// Sync the pod to know additional fields.
+				pod, err = cs.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+				framework.ExpectNoError(err, "Failed to fetch pod: %v", err)
+
+				ginkgo.By("[init] checking the claim")
+				err = e2epv.WaitForPersistentVolumeClaimPhase(v1.ClaimBound, cs, pvc.Namespace, pvc.Name, framework.Poll, f.Timeouts.ClaimProvision)
+				framework.ExpectNoError(err)
+				// Get new copy of the claim.
+				pvc, err = cs.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
+				framework.ExpectNoError(err)
+
+				// Get the bound PV.
 				ginkgo.By("[init] checking the PV")
 				pv, err := cs.CoreV1().PersistentVolumes().Get(context.TODO(), pvc.Spec.VolumeName, metav1.GetOptions{})
 				framework.ExpectNoError(err)
 
+				// Delete the pod to force NodeUnpublishVolume (unlike the ephemeral case where the pod is deleted at the end of the test).
 				ginkgo.By("[init] deleting the pod")
-				StopPod(cs, pod)
+				StopPod(ctx, cs, pod)
 
 				// At this point we know that:
 				// - a pod was created with a PV that's supposed to have data
@@ -386,41 +352,30 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 					framework.Failf("timed out waiting for node=%s to not use the volume=%s", nodeName, volumeName)
 				}
 
-				// Get new copy of the snapshot
-				ginkgo.By("checking the snapshot")
-				vs, err = dc.Resource(storageutils.SnapshotGVR).Namespace(vs.GetNamespace()).Get(context.TODO(), vs.GetName(), metav1.GetOptions{})
-				framework.ExpectNoError(err)
-
-				// Get the bound snapshotContent
-				snapshotStatus := vs.Object["status"].(map[string]interface{})
-				snapshotContentName := snapshotStatus["boundVolumeSnapshotContentName"].(string)
-				vscontent, err := dc.Resource(storageutils.SnapshotContentGVR).Get(context.TODO(), snapshotContentName, metav1.GetOptions{})
-				framework.ExpectNoError(err)
-
-				snapshotContentSpec := vscontent.Object["spec"].(map[string]interface{})
-				volumeSnapshotRef := snapshotContentSpec["volumeSnapshotRef"].(map[string]interface{})
-
-				var restoredPVC *v1.PersistentVolumeClaim
-				var restoredPod *v1.Pod
-
-				// Check SnapshotContent properties
-				ginkgo.By("checking the SnapshotContent")
-				// PreprovisionedCreatedSnapshot do not need to set volume snapshot class name
-				if pattern.SnapshotType != storageframework.PreprovisionedCreatedSnapshot {
-					framework.ExpectEqual(snapshotContentSpec["volumeSnapshotClassName"], vsc.GetName())
-				}
-				framework.ExpectEqual(volumeSnapshotRef["name"], vs.GetName())
-				framework.ExpectEqual(volumeSnapshotRef["namespace"], vs.GetNamespace())
+				// Take the snapshot.
+				parameters := map[string]string{}
+				sr := storageframework.CreateSnapshotResource(sDriver, config, pattern, pvc.Name, pvc.Namespace, f.Timeouts, parameters)
+				cleanupSteps = append(cleanupSteps, func() {
+					framework.ExpectNoError(sr.CleanupResource(f.Timeouts))
+				})
+				vs := sr.Vs
+				// get the snapshot and check SnapshotContent properties
+				vscontent := checkSnapshot(dc, sr, pattern)
 
 				ginkgo.By("Modifying source data test")
+				var restoredPVC *v1.PersistentVolumeClaim
+				var restoredPod *v1.Pod
 				modifiedMntTestData := fmt.Sprintf("modified data from %s namespace", pvc.GetNamespace())
 
 				ginkgo.By("modifying the data in the source PVC")
 
-				command := fmt.Sprintf("echo '%s' > %s", modifiedMntTestData, datapath)
-				RunInPodWithVolume(cs, f.Timeouts, pvc.Namespace, pvc.Name, "pvc-snapshottable-data-tester", command, config.ClientNodeSelection)
+				// After writing data to a file `sync` flushes the data from memory to disk.
+				// sync is available in the Linux and Windows versions of agnhost.
+				command := fmt.Sprintf("echo '%s' > %s; sync", modifiedMntTestData, datapath)
+				RunInPodWithVolume(ctx, cs, f.Timeouts, pvc.Namespace, pvc.Name, "pvc-snapshottable-data-tester", command, config.ClientNodeSelection)
 
 				ginkgo.By("creating a pvc from the snapshot")
+				claimSize = pvc.Spec.Resources.Requests.Storage().String()
 				restoredPVC = e2epv.MakePersistentVolumeClaim(e2epv.PersistentVolumeClaimConfig{
 					ClaimSize:        claimSize,
 					StorageClassName: &(sc.Name),
@@ -446,16 +401,14 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				})
 
 				ginkgo.By("starting a pod to use the snapshot")
-				restoredPod = StartInPodWithVolume(cs, restoredPVC.Namespace, restoredPVC.Name, "restored-pvc-tester", "sleep 300", config.ClientNodeSelection)
+				restoredPod = StartInPodWithVolume(ctx, cs, restoredPVC.Namespace, restoredPVC.Name, "restored-pvc-tester", "sleep 300", config.ClientNodeSelection)
 				cleanupSteps = append(cleanupSteps, func() {
-					StopPod(cs, restoredPod)
+					StopPod(ctx, cs, restoredPod)
 				})
 				framework.ExpectNoError(e2epod.WaitTimeoutForPodRunningInNamespace(cs, restoredPod.Name, restoredPod.Namespace, f.Timeouts.PodStartSlow))
-				if pattern.VolType != storageframework.GenericEphemeralVolume {
-					commands := e2evolume.GenerateReadFileCmd(datapath)
-					_, err = framework.LookForStringInPodExec(restoredPod.Namespace, restoredPod.Name, commands, originalMntTestData, time.Minute)
-					framework.ExpectNoError(err)
-				}
+				commands := e2evolume.GenerateReadFileCmd(datapath)
+				_, err = e2eoutput.LookForStringInPodExec(restoredPod.Namespace, restoredPod.Name, commands, originalMntTestData, time.Minute)
+				framework.ExpectNoError(err)
 
 				ginkgo.By("should delete the VolumeSnapshotContent according to its deletion policy")
 
@@ -471,20 +424,56 @@ func (s *snapshottableTestSuite) DefineTests(driver storageframework.TestDriver,
 				err = cs.CoreV1().PersistentVolumeClaims(restoredPVC.Namespace).Delete(context.TODO(), restoredPVC.Name, metav1.DeleteOptions{})
 				framework.ExpectNoError(err)
 
-				// Wait for the Snapshot to be actually deleted from API server
-				err = storageutils.WaitForNamespacedGVRDeletion(dc, storageutils.SnapshotGVR, vs.GetNamespace(), vs.GetNamespace(), framework.Poll, f.Timeouts.SnapshotDelete)
-
-				switch pattern.SnapshotDeletionPolicy {
-				case storageframework.DeleteSnapshot:
-					ginkgo.By("checking the SnapshotContent has been deleted")
-					err = utils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), framework.Poll, f.Timeouts.SnapshotDelete)
-					framework.ExpectNoError(err)
-				case storageframework.RetainSnapshot:
-					ginkgo.By("checking the SnapshotContent has not been deleted")
-					err = utils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), 1*time.Second /* poll */, 30*time.Second /* timeout */)
-					framework.ExpectError(err)
-				}
+				deleteVolumeSnapshot(f, dc, sr, pattern, vscontent)
 			})
 		})
 	})
+}
+
+func deleteVolumeSnapshot(f *framework.Framework, dc dynamic.Interface, sr *storageframework.SnapshotResource, pattern storageframework.TestPattern, vscontent *unstructured.Unstructured) {
+	vs := sr.Vs
+
+	// Wait for the Snapshot to be actually deleted from API server
+	err := storageutils.WaitForNamespacedGVRDeletion(dc, storageutils.SnapshotGVR, vs.GetNamespace(), vs.GetNamespace(), framework.Poll, f.Timeouts.SnapshotDelete)
+	framework.ExpectNoError(err)
+
+	switch pattern.SnapshotDeletionPolicy {
+	case storageframework.DeleteSnapshot:
+		ginkgo.By("checking the SnapshotContent has been deleted")
+		err = storageutils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), framework.Poll, f.Timeouts.SnapshotDelete)
+		framework.ExpectNoError(err)
+	case storageframework.RetainSnapshot:
+		ginkgo.By("checking the SnapshotContent has not been deleted")
+		err = storageutils.WaitForGVRDeletion(dc, storageutils.SnapshotContentGVR, vscontent.GetName(), 1*time.Second /* poll */, 30*time.Second /* timeout */)
+		framework.ExpectError(err)
+	}
+}
+
+func checkSnapshot(dc dynamic.Interface, sr *storageframework.SnapshotResource, pattern storageframework.TestPattern) *unstructured.Unstructured {
+	vs := sr.Vs
+	vsc := sr.Vsclass
+
+	// Get new copy of the snapshot
+	ginkgo.By("checking the snapshot")
+	vs, err := dc.Resource(storageutils.SnapshotGVR).Namespace(vs.GetNamespace()).Get(context.TODO(), vs.GetName(), metav1.GetOptions{})
+	framework.ExpectNoError(err)
+
+	// Get the bound snapshotContent
+	snapshotStatus := vs.Object["status"].(map[string]interface{})
+	snapshotContentName := snapshotStatus["boundVolumeSnapshotContentName"].(string)
+	vscontent, err := dc.Resource(storageutils.SnapshotContentGVR).Get(context.TODO(), snapshotContentName, metav1.GetOptions{})
+	framework.ExpectNoError(err)
+
+	snapshotContentSpec := vscontent.Object["spec"].(map[string]interface{})
+	volumeSnapshotRef := snapshotContentSpec["volumeSnapshotRef"].(map[string]interface{})
+
+	// Check SnapshotContent properties
+	ginkgo.By("checking the SnapshotContent")
+	// PreprovisionedCreatedSnapshot do not need to set volume snapshot class name
+	if pattern.SnapshotType != storageframework.PreprovisionedCreatedSnapshot {
+		framework.ExpectEqual(snapshotContentSpec["volumeSnapshotClassName"], vsc.GetName())
+	}
+	framework.ExpectEqual(volumeSnapshotRef["name"], vs.GetName())
+	framework.ExpectEqual(volumeSnapshotRef["namespace"], vs.GetNamespace())
+	return vscontent
 }
