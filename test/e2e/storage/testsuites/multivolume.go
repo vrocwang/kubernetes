@@ -132,7 +132,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	//      [   node1   ]                           ==>        [   node1   ]
 	//          /    \      <- same volume mode                   /    \
 	//   [volume1]  [volume2]                              [volume1]  [volume2]
-	ginkgo.It("should access to two volumes with the same volume mode and retain data across pod recreation on the same node", func() {
+	ginkgo.It("should access to two volumes with the same volume mode and retain data across pod recreation on the same node", func(ctx context.Context) {
 		// Currently, multiple volumes are not generally available for pre-provisoined volume,
 		// because containerized storage servers, such as iSCSI and rbd, are just returning
 		// a static volume inside container, not actually creating a new volume per request.
@@ -141,7 +141,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 		}
 
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		var pvcs []*v1.PersistentVolumeClaim
 		numVols := 2
@@ -162,7 +162,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	//      [   node1   ]                           ==>        [   node2   ]
 	//          /    \      <- same volume mode                   /    \
 	//   [volume1]  [volume2]                              [volume1]  [volume2]
-	ginkgo.It("should access to two volumes with the same volume mode and retain data across pod recreation on different node", func() {
+	ginkgo.It("should access to two volumes with the same volume mode and retain data across pod recreation on different node", func(ctx context.Context) {
 		// Currently, multiple volumes are not generally available for pre-provisoined volume,
 		// because containerized storage servers, such as iSCSI and rbd, are just returning
 		// a static volume inside container, not actually creating a new volume per request.
@@ -171,7 +171,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 		}
 
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		// Check different-node test requirement
 		if l.driver.GetDriverInfo().Capabilities[storageframework.CapSingleNodeVolume] {
@@ -203,7 +203,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	//      [   node1   ]                          ==>        [   node1   ]
 	//          /    \      <- different volume mode             /    \
 	//   [volume1]  [volume2]                              [volume1]  [volume2]
-	ginkgo.It("should access to two volumes with different volume mode and retain data across pod recreation on the same node", func() {
+	ginkgo.It("should access to two volumes with different volume mode and retain data across pod recreation on the same node", func(ctx context.Context) {
 		if pattern.VolMode == v1.PersistentVolumeFilesystem {
 			e2eskipper.Skipf("Filesystem volume case should be covered by block volume case -- skipping")
 		}
@@ -216,7 +216,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 		}
 
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		var pvcs []*v1.PersistentVolumeClaim
 		numVols := 2
@@ -242,7 +242,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	//      [   node1   ]                          ==>        [   node2   ]
 	//          /    \      <- different volume mode             /    \
 	//   [volume1]  [volume2]                              [volume1]  [volume2]
-	ginkgo.It("should access to two volumes with different volume mode and retain data across pod recreation on different node", func() {
+	ginkgo.It("should access to two volumes with different volume mode and retain data across pod recreation on different node", func(ctx context.Context) {
 		if pattern.VolMode == v1.PersistentVolumeFilesystem {
 			e2eskipper.Skipf("Filesystem volume case should be covered by block volume case -- skipping")
 		}
@@ -255,7 +255,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 		}
 
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		// Check different-node test requirement
 		if l.driver.GetDriverInfo().Capabilities[storageframework.CapSingleNodeVolume] {
@@ -292,9 +292,9 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	// [   node1   ]
 	//   \      /     <- same volume mode
 	//   [volume1]
-	ginkgo.It("should concurrently access the single volume from pods on the same node", func() {
+	ginkgo.It("should concurrently access the single volume from pods on the same node", func(ctx context.Context) {
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		numPods := 2
 
@@ -319,7 +319,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	// [volume1]   ->  [restored volume1 snapshot]
 	ginkgo.It("should concurrently access the volume and restored snapshot from pods on the same node [LinuxOnly][Feature:VolumeSnapshotDataSource][Feature:VolumeSourceXFS]", func(ctx context.Context) {
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		if !l.driver.GetDriverInfo().Capabilities[storageframework.CapSnapshotDataSource] {
 			e2eskipper.Skipf("Driver %q does not support volume snapshots - skipping", dInfo.Name)
@@ -358,9 +358,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 		pvc2, err := l.cs.CoreV1().PersistentVolumeClaims(pvc2.Namespace).Create(context.TODO(), pvc2, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 		pvcs = append(pvcs, pvc2)
-		defer func() {
-			l.cs.CoreV1().PersistentVolumeClaims(pvc2.Namespace).Delete(context.TODO(), pvc2.Name, metav1.DeleteOptions{})
-		}()
+		ginkgo.DeferCleanup(framework.IgnoreNotFound(l.cs.CoreV1().PersistentVolumeClaims(pvc2.Namespace).Delete), pvc2.Name, metav1.DeleteOptions{})
 
 		// Test access to both volumes on the same node.
 		TestConcurrentAccessToRelatedVolumes(l.config.Framework, l.cs, l.ns.Name, l.config.ClientNodeSelection, pvcs, expectedContent)
@@ -373,7 +371,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	// [volume1]   ->  [cloned volume1]
 	ginkgo.It("should concurrently access the volume and its clone from pods on the same node [LinuxOnly][Feature:VolumeSourceXFS]", func(ctx context.Context) {
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		if !l.driver.GetDriverInfo().Capabilities[storageframework.CapPVCDataSource] {
 			e2eskipper.Skipf("Driver %q does not support volume clone - skipping", dInfo.Name)
@@ -402,9 +400,7 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 		pvc2, err := l.cs.CoreV1().PersistentVolumeClaims(pvc2.Namespace).Create(context.TODO(), pvc2, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 		pvcs = append(pvcs, pvc2)
-		defer func() {
-			l.cs.CoreV1().PersistentVolumeClaims(pvc2.Namespace).Delete(context.TODO(), pvc2.Name, metav1.DeleteOptions{})
-		}()
+		ginkgo.DeferCleanup(framework.IgnoreNotFound(l.cs.CoreV1().PersistentVolumeClaims(pvc2.Namespace).Delete), pvc2.Name, metav1.DeleteOptions{})
 
 		// Test access to both volumes on the same node.
 		TestConcurrentAccessToRelatedVolumes(l.config.Framework, l.cs, l.ns.Name, l.config.ClientNodeSelection, pvcs, expectedContent)
@@ -415,9 +411,9 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	// [   node1   ]
 	//   \      /     <- same volume mode (read only)
 	//   [volume1]
-	ginkgo.It("should concurrently access the single read-only volume from pods on the same node", func() {
+	ginkgo.It("should concurrently access the single read-only volume from pods on the same node", func(ctx context.Context) {
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		numPods := 2
 
@@ -447,9 +443,9 @@ func (t *multiVolumeTestSuite) DefineTests(driver storageframework.TestDriver, p
 	// [   node1   ] [   node2   ]
 	//         \      /     <- same volume mode
 	//         [volume1]
-	ginkgo.It("should concurrently access the single volume from pods on different node", func() {
+	ginkgo.It("should concurrently access the single volume from pods on different node", func(ctx context.Context) {
 		init()
-		defer cleanup()
+		ginkgo.DeferCleanup(cleanup)
 
 		numPods := 2
 

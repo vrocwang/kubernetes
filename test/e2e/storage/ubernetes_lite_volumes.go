@@ -53,7 +53,7 @@ var _ = utils.SIGDescribe("Multi-AZ Cluster Volumes", func() {
 		e2eskipper.SkipUnlessAtLeast(zoneCount, 2, msg)
 		// TODO: SkipUnlessDefaultScheduler() // Non-default schedulers might not spread
 	})
-	ginkgo.It("should schedule pods in the same zones as statically provisioned PVs", func() {
+	ginkgo.It("should schedule pods in the same zones as statically provisioned PVs", func(ctx context.Context) {
 		PodsUseStaticPVsOrFail(f, (2*zoneCount)+1, image)
 	})
 })
@@ -90,7 +90,7 @@ func PodsUseStaticPVsOrFail(f *framework.Framework, podCount int, image string) 
 		configs[i] = &staticPVTestConfig{}
 	}
 
-	defer func() {
+	ginkgo.DeferCleanup(func(ctx context.Context) {
 		ginkgo.By("Cleaning up pods and PVs")
 		for _, config := range configs {
 			e2epod.DeletePodOrFail(c, ns, config.pod.Name)
@@ -110,7 +110,7 @@ func PodsUseStaticPVsOrFail(f *framework.Framework, podCount int, image string) 
 			}(configs[i])
 		}
 		wg.Wait()
-	}()
+	})
 
 	for i, config := range configs {
 		zone := zonelist[i%len(zones)]

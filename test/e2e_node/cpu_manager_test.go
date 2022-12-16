@@ -523,7 +523,7 @@ func runCPUManagerTests(f *framework.Framework) {
 		}
 	})
 
-	ginkgo.It("should assign CPUs as expected based on the Pod spec", func() {
+	ginkgo.It("should assign CPUs as expected based on the Pod spec", func(ctx context.Context) {
 		cpuCap, cpuAlloc, _ = getLocalNodeCPUDetails(f)
 
 		// Skip CPU Manager tests altogether if the CPU capacity < 2.
@@ -594,9 +594,15 @@ func runCPUManagerTests(f *framework.Framework) {
 		err = e2epod.NewPodClient(f).MatchContainerOutput(pod.Name, pod.Spec.Containers[0].Name, expAllowedCPUsListRegex)
 		framework.ExpectNoError(err, "expected log not found in container [%s] of pod [%s]",
 			pod.Spec.Containers[0].Name, pod.Name)
+
+		deletePodSyncByName(f, pod.Name)
+		// we need to wait for all containers to really be gone so cpumanager reconcile loop will not rewrite the cpu_manager_state.
+		// this is in turn needed because we will have an unavoidable (in the current framework) race with the
+		// reconcile loop which will make our attempt to delete the state file and to restore the old config go haywire
+		waitForAllContainerRemoval(pod.Name, pod.Namespace)
 	})
 
-	ginkgo.It("should assign CPUs as expected with enhanced policy based on strict SMT alignment", func() {
+	ginkgo.It("should assign CPUs as expected with enhanced policy based on strict SMT alignment", func(ctx context.Context) {
 		fullCPUsOnlyOpt := fmt.Sprintf("option=%s", cpumanager.FullPCPUsOnlyOption)
 		_, cpuAlloc, _ = getLocalNodeCPUDetails(f)
 		smtLevel := getSMTLevel()

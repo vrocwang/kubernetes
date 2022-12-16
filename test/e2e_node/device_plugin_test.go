@@ -94,7 +94,9 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 		// and then use the same here
 		devsLen := int64(2)
 		var devicePluginPod, dptemplate *v1.Pod
-
+		var v1alphaPodResources *kubeletpodresourcesv1alpha1.ListPodResourcesResponse
+		var v1PodResources *kubeletpodresourcesv1.ListPodResourcesResponse
+		var err error
 		ginkgo.BeforeEach(func() {
 			ginkgo.By("Wait for node to be ready")
 			gomega.Eventually(func() bool {
@@ -102,6 +104,18 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 				framework.ExpectNoError(err)
 				return nodes == 1
 			}, time.Minute, time.Second).Should(gomega.BeTrue())
+
+			v1alphaPodResources, err = getV1alpha1NodeDevices()
+			framework.ExpectNoError(err, "should get node local podresources by accessing the (v1alpha) podresources API endpoint")
+
+			v1PodResources, err = getV1NodeDevices()
+			framework.ExpectNoError(err, "should get node local podresources by accessing the (v1) podresources API endpoint")
+
+			// Before we run the device plugin test, we need to ensure
+			// that the cluster is in a clean state and there are no
+			// pods running on this node.
+			gomega.Expect(v1alphaPodResources.PodResources).To(gomega.BeEmpty(), "should have no pod resources")
+			gomega.Expect(v1PodResources.PodResources).To(gomega.BeEmpty(), "should have no pod resources")
 
 			ginkgo.By("Scheduling a sample device plugin pod")
 			data, err := e2etestfiles.Read(SampleDevicePluginDSYAML)
@@ -168,17 +182,17 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 			ginkgo.By("devices now unavailable on the local node")
 		})
 
-		ginkgo.It("Can schedule a pod that requires a device", func() {
+		ginkgo.It("Can schedule a pod that requires a device", func(ctx context.Context) {
 			podRECMD := "devs=$(ls /tmp/ | egrep '^Dev-[0-9]+$') && echo stub devices: $devs && sleep 60"
 			pod1 := e2epod.NewPodClient(f).CreateSync(makeBusyboxPod(resourceName, podRECMD))
 			deviceIDRE := "stub devices: (Dev-[0-9]+)"
 			devID1 := parseLog(f, pod1.Name, pod1.Name, deviceIDRE)
 			gomega.Expect(devID1).To(gomega.Not(gomega.Equal("")))
 
-			v1alphaPodResources, err := getV1alpha1NodeDevices()
+			v1alphaPodResources, err = getV1alpha1NodeDevices()
 			framework.ExpectNoError(err)
 
-			v1PodResources, err := getV1NodeDevices()
+			v1PodResources, err = getV1NodeDevices()
 			framework.ExpectNoError(err)
 
 			framework.Logf("v1alphaPodResources.PodResources:%+v\n", v1alphaPodResources.PodResources)
@@ -228,7 +242,7 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 			framework.ExpectEqual(len(v1ResourcesForOurPod.Containers[0].Devices[0].DeviceIds), 1)
 		})
 
-		ginkgo.It("Keeps device plugin assignments across pod and kubelet restarts", func() {
+		ginkgo.It("Keeps device plugin assignments across pod and kubelet restarts", func(ctx context.Context) {
 			podRECMD := "devs=$(ls /tmp/ | egrep '^Dev-[0-9]+$') && echo stub devices: $devs && sleep 60"
 			pod1 := e2epod.NewPodClient(f).CreateSync(makeBusyboxPod(resourceName, podRECMD))
 			deviceIDRE := "stub devices: (Dev-[0-9]+)"
@@ -257,7 +271,7 @@ func testDevicePlugin(f *framework.Framework, pluginSockDir string) {
 			framework.ExpectEqual(devIDRestart1, devID1)
 		})
 
-		ginkgo.It("Keeps device plugin assignments after the device plugin has been re-registered", func() {
+		ginkgo.It("Keeps device plugin assignments after the device plugin has been re-registered", func(ctx context.Context) {
 			podRECMD := "devs=$(ls /tmp/ | egrep '^Dev-[0-9]+$') && echo stub devices: $devs && sleep 60"
 			pod1 := e2epod.NewPodClient(f).CreateSync(makeBusyboxPod(resourceName, podRECMD))
 			deviceIDRE := "stub devices: (Dev-[0-9]+)"

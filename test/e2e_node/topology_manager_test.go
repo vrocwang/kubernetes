@@ -884,7 +884,7 @@ func runTopologyManagerTests(f *framework.Framework) {
 		topologymanager.PolicyNone,
 	}
 
-	ginkgo.It("run Topology Manager policy test suite", func() {
+	ginkgo.It("run Topology Manager policy test suite", func(ctx context.Context) {
 		oldCfg, err = getCurrentKubeletConfig()
 		framework.ExpectNoError(err)
 
@@ -901,7 +901,7 @@ func runTopologyManagerTests(f *framework.Framework) {
 		}
 	})
 
-	ginkgo.It("run Topology Manager node alignment test suite", func() {
+	ginkgo.It("run Topology Manager node alignment test suite", func(ctx context.Context) {
 		numaNodes, coreCount := hostPrecheck()
 
 		configMap := getSRIOVDevicePluginConfigMap(framework.TestContext.SriovdpConfigMapFile)
@@ -910,7 +910,7 @@ func runTopologyManagerTests(f *framework.Framework) {
 		framework.ExpectNoError(err)
 
 		sd := setupSRIOVConfigOrFail(f, configMap)
-		defer teardownSRIOVConfigOrFail(f, sd)
+		ginkgo.DeferCleanup(teardownSRIOVConfigOrFail, f, sd)
 
 		scope := containerScopeTopology
 		for _, policy := range policies {
@@ -925,7 +925,7 @@ func runTopologyManagerTests(f *framework.Framework) {
 		}
 	})
 
-	ginkgo.It("run the Topology Manager pod scope alignment test suite", func() {
+	ginkgo.It("run the Topology Manager pod scope alignment test suite", func(ctx context.Context) {
 		numaNodes, coreCount := hostPrecheck()
 
 		configMap := getSRIOVDevicePluginConfigMap(framework.TestContext.SriovdpConfigMapFile)

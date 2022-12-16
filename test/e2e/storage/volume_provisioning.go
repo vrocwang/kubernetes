@@ -419,7 +419,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			framework.ExpectNoError(e2epv.WaitForPersistentVolumeDeleted(c, pv.Name, 1*time.Second, 30*time.Second))
 		})
 
-		ginkgo.It("should test that deleting a claim before the volume is provisioned deletes the volume.", func() {
+		ginkgo.It("should test that deleting a claim before the volume is provisioned deletes the volume.", func(ctx context.Context) {
 			// This case tests for the regressions of a bug fixed by PR #21268
 			// REGRESSION: Deleting the PVC before the PV is provisioned can result in the PV
 			// not being deleted.
@@ -440,7 +440,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			class := newStorageClass(test, ns, "race")
 			class, err := c.StorageV1().StorageClasses().Create(context.TODO(), class, metav1.CreateOptions{})
 			framework.ExpectNoError(err)
-			defer deleteStorageClass(c, class.Name)
+			ginkgo.DeferCleanup(deleteStorageClass, c, class.Name)
 
 			// To increase chance of detection, attempt multiple iterations
 			for i := 0; i < raceAttempts; i++ {
@@ -459,13 +459,13 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			ginkgo.By(fmt.Sprintf("Checking for residual PersistentVolumes associated with StorageClass %s", class.Name))
 			residualPVs, err = waitForProvisionedVolumesDeleted(c, class.Name)
 			// Cleanup the test resources before breaking
-			defer deleteProvisionedVolumesAndDisks(c, residualPVs)
+			ginkgo.DeferCleanup(deleteProvisionedVolumesAndDisks, c, residualPVs)
 			framework.ExpectNoError(err, "PersistentVolumes were not deleted as expected. %d remain", len(residualPVs))
 
 			framework.Logf("0 PersistentVolumes remain.")
 		})
 
-		ginkgo.It("deletion should be idempotent", func() {
+		ginkgo.It("deletion should be idempotent", func(ctx context.Context) {
 			// This test ensures that deletion of a volume is idempotent.
 			// It creates a PV with Retain policy, deletes underlying AWS / GCE
 			// volume and changes the reclaim policy to Delete.
@@ -571,7 +571,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 
 			ginkgo.By("creating an external dynamic provisioner pod")
 			pod := utils.StartExternalProvisioner(c, ns, externalPluginName)
-			defer e2epod.DeletePodOrFail(c, ns, pod.Name)
+			ginkgo.DeferCleanup(e2epod.DeletePodOrFail, c, ns, pod.Name)
 
 			ginkgo.By("creating a StorageClass")
 			test := testsuites.StorageClassTest{
@@ -623,7 +623,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 		})
 
 		// Modifying the default storage class can be disruptive to other tests that depend on it
-		ginkgo.It("should be disabled by changing the default annotation [Serial] [Disruptive]", func() {
+		ginkgo.It("should be disabled by changing the default annotation [Serial] [Disruptive]", func(ctx context.Context) {
 			e2eskipper.SkipUnlessProviderIs("openstack", "gce", "aws", "gke", "vsphere", "azure")
 			e2epv.SkipIfNoDefaultStorageClass(c)
 
@@ -638,7 +638,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 
 			ginkgo.By("setting the is-default StorageClass annotation to false")
 			verifyDefaultStorageClass(c, scName, true)
-			defer updateDefaultStorageClass(c, scName, "true")
+			ginkgo.DeferCleanup(updateDefaultStorageClass, c, scName, "true")
 			updateDefaultStorageClass(c, scName, "false")
 
 			ginkgo.By("creating a claim with default storageclass and expecting it to timeout")
@@ -648,9 +648,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			}, ns)
 			claim, err := c.CoreV1().PersistentVolumeClaims(ns).Create(context.TODO(), claim, metav1.CreateOptions{})
 			framework.ExpectNoError(err)
-			defer func() {
-				framework.ExpectNoError(e2epv.DeletePersistentVolumeClaim(c, claim.Name, ns))
-			}()
+			ginkgo.DeferCleanup(e2epv.DeletePersistentVolumeClaim, c, claim.Name, ns)
 
 			// The claim should timeout phase:Pending
 			err = e2epv.WaitForPersistentVolumeClaimPhase(v1.ClaimBound, c, ns, claim.Name, 2*time.Second, framework.ClaimProvisionShortTimeout)
@@ -662,7 +660,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 		})
 
 		// Modifying the default storage class can be disruptive to other tests that depend on it
-		ginkgo.It("should be disabled by removing the default annotation [Serial] [Disruptive]", func() {
+		ginkgo.It("should be disabled by removing the default annotation [Serial] [Disruptive]", func(ctx context.Context) {
 			e2eskipper.SkipUnlessProviderIs("openstack", "gce", "aws", "gke", "vsphere", "azure")
 			e2epv.SkipIfNoDefaultStorageClass(c)
 
@@ -677,7 +675,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 
 			ginkgo.By("removing the is-default StorageClass annotation")
 			verifyDefaultStorageClass(c, scName, true)
-			defer updateDefaultStorageClass(c, scName, "true")
+			ginkgo.DeferCleanup(updateDefaultStorageClass, c, scName, "true")
 			updateDefaultStorageClass(c, scName, "")
 
 			ginkgo.By("creating a claim with default storageclass and expecting it to timeout")
