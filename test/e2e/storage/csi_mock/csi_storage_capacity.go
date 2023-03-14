@@ -104,7 +104,7 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 
 		for _, t := range tests {
 			test := t
-			ginkgo.It(test.name, func(ctx context.Context) {
+			ginkgo.It(test.name, ginkgo.NodeTimeout(csiPodRunningTimeout), func(ctx context.Context) {
 				var err error
 				params := testParameters{
 					lateBinding:    test.lateBinding,
@@ -126,11 +126,8 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 					})
 				}
 
-				m.init(params)
+				m.init(ctx, params)
 				ginkgo.DeferCleanup(m.cleanup)
-
-				ctx, cancel := context.WithTimeout(ctx, csiPodRunningTimeout)
-				defer cancel()
 
 				// In contrast to the raw watch, RetryWatcher is expected to deliver all events even
 				// when the underlying raw watch gets closed prematurely
@@ -148,7 +145,7 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 				framework.ExpectNoError(err, "create PVC watch")
 				defer pvcWatch.Stop()
 
-				sc, claim, pod := m.createPod(pvcReference)
+				sc, claim, pod := m.createPod(ctx, pvcReference)
 				gomega.Expect(pod).NotTo(gomega.BeNil(), "while creating pod")
 				bindingMode := storagev1.VolumeBindingImmediate
 				if test.lateBinding {
@@ -156,9 +153,9 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 				}
 				framework.ExpectEqual(*sc.VolumeBindingMode, bindingMode, "volume binding mode")
 
-				err = e2epod.WaitForPodNameRunningInNamespace(m.cs, pod.Name, pod.Namespace)
+				err = e2epod.WaitForPodNameRunningInNamespace(ctx, m.cs, pod.Name, pod.Namespace)
 				framework.ExpectNoError(err, "failed to start pod")
-				err = e2epod.DeletePodWithWait(m.cs, pod)
+				err = e2epod.DeletePodWithWait(ctx, m.cs, pod)
 				framework.ExpectNoError(err, "failed to delete pod")
 				err = m.cs.CoreV1().PersistentVolumeClaims(claim.Namespace).Delete(ctx, claim.Name, metav1.DeleteOptions{})
 				framework.ExpectNoError(err, "failed to delete claim")
@@ -180,10 +177,10 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 				}
 
 				var calls []drivers.MockCSICall
-				err = wait.PollImmediateUntil(time.Second, func() (done bool, err error) {
-					c, index, err := compareCSICalls(deterministicCalls, expected, m.driver.GetCalls)
+				err = wait.PollImmediateUntilWithContext(ctx, time.Second, func(ctx context.Context) (done bool, err error) {
+					c, index, err := compareCSICalls(ctx, deterministicCalls, expected, m.driver.GetCalls)
 					if err != nil {
-						return true, fmt.Errorf("error waiting for expected CSI calls: %s", err)
+						return true, fmt.Errorf("error waiting for expected CSI calls: %w", err)
 					}
 					calls = c
 					if index == 0 {
@@ -195,7 +192,7 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 						return true, nil
 					}
 					return false, nil
-				}, ctx.Done())
+				})
 				framework.ExpectNoError(err, "while waiting for all CSI calls")
 
 				// The capacity error is dealt with in two different ways.
@@ -323,9 +320,9 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 		}
 		for _, t := range tests {
 			test := t
-			ginkgo.It(t.name, func(ctx context.Context) {
+			ginkgo.It(t.name, ginkgo.SpecTimeout(f.Timeouts.PodStart), func(ctx context.Context) {
 				scName := "mock-csi-storage-capacity-" + f.UniqueName
-				m.init(testParameters{
+				m.init(ctx, testParameters{
 					registerDriver:  true,
 					scName:          scName,
 					storageCapacity: test.storageCapacity,
@@ -346,7 +343,7 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 						NodeTopology:     &metav1.LabelSelector{},
 						Capacity:         &capacityQuantity,
 					}
-					createdCapacity, err := f.ClientSet.StorageV1().CSIStorageCapacities(f.Namespace.Name).Create(context.Background(), capacity, metav1.CreateOptions{})
+					createdCapacity, err := f.ClientSet.StorageV1().CSIStorageCapacities(f.Namespace.Name).Create(ctx, capacity, metav1.CreateOptions{})
 					framework.ExpectNoError(err, "create CSIStorageCapacity %+v", *capacity)
 					ginkgo.DeferCleanup(framework.IgnoreNotFound(f.ClientSet.StorageV1().CSIStorageCapacities(f.Namespace.Name).Delete), createdCapacity.Name, metav1.DeleteOptions{})
 				}
@@ -356,19 +353,17 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 				syncDelay := 5 * time.Second
 				time.Sleep(syncDelay)
 
-				sc, _, pod := m.createPod(pvcReference) // late binding as specified above
+				sc, _, pod := m.createPod(ctx, pvcReference) // late binding as specified above
 				framework.ExpectEqual(sc.Name, scName, "pre-selected storage class name not used")
 
-				waitCtx, cancel := context.WithTimeout(ctx, f.Timeouts.PodStart)
-				defer cancel()
 				condition := anyOf(
-					podRunning(waitCtx, f.ClientSet, pod.Name, pod.Namespace),
+					podRunning(ctx, f.ClientSet, pod.Name, pod.Namespace),
 					// We only just created the CSIStorageCapacity objects, therefore
 					// we have to ignore all older events, plus the syncDelay as our
 					// safety margin.
-					podHasStorage(waitCtx, f.ClientSet, pod.Name, pod.Namespace, time.Now().Add(syncDelay)),
+					podHasStorage(ctx, f.ClientSet, pod.Name, pod.Namespace, time.Now().Add(syncDelay)),
 				)
-				err = wait.PollImmediateUntil(poll, condition, waitCtx.Done())
+				err = wait.PollImmediateUntil(poll, condition, ctx.Done())
 				if test.expectFailure {
 					switch {
 					case errors.Is(err, context.DeadlineExceeded),
@@ -385,7 +380,7 @@ var _ = utils.SIGDescribe("CSI Mock volume storage capacity", func() {
 				}
 
 				ginkgo.By("Deleting the previously created pod")
-				err = e2epod.DeletePodWithWait(m.cs, pod)
+				err = e2epod.DeletePodWithWait(ctx, m.cs, pod)
 				framework.ExpectNoError(err, "while deleting")
 			})
 		}

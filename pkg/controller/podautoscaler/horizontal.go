@@ -108,6 +108,9 @@ type HorizontalController struct {
 	// Storage of HPAs and their selectors.
 	hpaSelectors    *selectors.BiMultimap
 	hpaSelectorsMux sync.Mutex
+
+	// feature gates
+	containerResourceMetricsEnabled bool
 }
 
 // NewHorizontalController creates a new HorizontalController.
@@ -124,7 +127,7 @@ func NewHorizontalController(
 	tolerance float64,
 	cpuInitializationPeriod,
 	delayOfInitialReadinessStatus time.Duration,
-
+	containerResourceMetricsEnabled bool,
 ) *HorizontalController {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartStructuredLogging(0)
@@ -132,19 +135,20 @@ func NewHorizontalController(
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "horizontal-pod-autoscaler"})
 
 	hpaController := &HorizontalController{
-		eventRecorder:                recorder,
-		scaleNamespacer:              scaleNamespacer,
-		hpaNamespacer:                hpaNamespacer,
-		downscaleStabilisationWindow: downscaleStabilisationWindow,
-		queue:                        workqueue.NewNamedRateLimitingQueue(NewDefaultHPARateLimiter(resyncPeriod), "horizontalpodautoscaler"),
-		mapper:                       mapper,
-		recommendations:              map[string][]timestampedRecommendation{},
-		recommendationsLock:          sync.Mutex{},
-		scaleUpEvents:                map[string][]timestampedScaleEvent{},
-		scaleUpEventsLock:            sync.RWMutex{},
-		scaleDownEvents:              map[string][]timestampedScaleEvent{},
-		scaleDownEventsLock:          sync.RWMutex{},
-		hpaSelectors:                 selectors.NewBiMultimap(),
+		eventRecorder:                   recorder,
+		scaleNamespacer:                 scaleNamespacer,
+		hpaNamespacer:                   hpaNamespacer,
+		downscaleStabilisationWindow:    downscaleStabilisationWindow,
+		queue:                           workqueue.NewNamedRateLimitingQueue(NewDefaultHPARateLimiter(resyncPeriod), "horizontalpodautoscaler"),
+		mapper:                          mapper,
+		recommendations:                 map[string][]timestampedRecommendation{},
+		recommendationsLock:             sync.Mutex{},
+		scaleUpEvents:                   map[string][]timestampedScaleEvent{},
+		scaleUpEventsLock:               sync.RWMutex{},
+		scaleDownEvents:                 map[string][]timestampedScaleEvent{},
+		scaleDownEventsLock:             sync.RWMutex{},
+		hpaSelectors:                    selectors.NewBiMultimap(),
+		containerResourceMetricsEnabled: containerResourceMetricsEnabled,
 	}
 
 	hpaInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -178,8 +182,9 @@ func (a *HorizontalController) Run(ctx context.Context, workers int) {
 	defer utilruntime.HandleCrash()
 	defer a.queue.ShutDown()
 
-	klog.Infof("Starting HPA controller")
-	defer klog.Infof("Shutting down HPA controller")
+	logger := klog.FromContext(ctx)
+	logger.Info("Starting HPA controller")
+	defer logger.Info("Shutting down HPA controller")
 
 	if !cache.WaitForNamedCacheSync("HPA", ctx.Done(), a.hpaListerSynced, a.podListerSynced) {
 		return
@@ -239,7 +244,8 @@ func (a *HorizontalController) deleteHPA(obj interface{}) {
 func (a *HorizontalController) worker(ctx context.Context) {
 	for a.processNextWorkItem(ctx) {
 	}
-	klog.Infof("horizontal pod autoscaler controller worker shutting down")
+	logger := klog.FromContext(ctx)
+	logger.Info("Horizontal Pod Autoscaler controller worker shutting down")
 }
 
 func (a *HorizontalController) processNextWorkItem(ctx context.Context) bool {
@@ -423,6 +429,12 @@ func (a *HorizontalController) computeReplicasForMetric(ctx context.Context, hpa
 			return 0, "", time.Time{}, condition, fmt.Errorf("failed to get %s resource metric value: %v", spec.Resource.Name, err)
 		}
 	case autoscalingv2.ContainerResourceMetricSourceType:
+		if !a.containerResourceMetricsEnabled {
+			// If the container resource metrics feature is disabled but the object has the one,
+			// that means the user enabled the feature once,
+			// created some HPAs with the container resource metrics, and disabled it finally.
+			return 0, "", time.Time{}, condition, fmt.Errorf("ContainerResource metric type is not supported: disabled by the feature gate")
+		}
 		replicaCountProposal, timestampProposal, metricNameProposal, condition, err = a.computeStatusForContainerResourceMetric(ctx, specReplicas, spec, hpa, selector, status)
 		if err != nil {
 			return 0, "", time.Time{}, condition, fmt.Errorf("failed to get %s container metric value: %v", spec.ContainerResource.Container, err)
@@ -447,9 +459,11 @@ func (a *HorizontalController) reconcileKey(ctx context.Context, key string) (de
 		return true, err
 	}
 
+	logger := klog.FromContext(ctx)
+
 	hpa, err := a.hpaLister.HorizontalPodAutoscalers(namespace).Get(name)
 	if errors.IsNotFound(err) {
-		klog.Infof("Horizontal Pod Autoscaler %s has been deleted in %s", name, namespace)
+		logger.Info("Horizontal Pod Autoscaler has been deleted", "HPA", klog.KRef(namespace, name))
 
 		a.recommendationsLock.Lock()
 		delete(a.recommendations, key)
@@ -544,7 +558,7 @@ func (a *HorizontalController) computeStatusForPodsMetric(currentReplicas int32,
 }
 
 func (a *HorizontalController) computeStatusForResourceMetricGeneric(ctx context.Context, currentReplicas int32, target autoscalingv2.MetricTarget,
-	resourceName v1.ResourceName, namespace string, container string, selector labels.Selector) (replicaCountProposal int32,
+	resourceName v1.ResourceName, namespace string, container string, selector labels.Selector, sourceType autoscalingv2.MetricSourceType) (replicaCountProposal int32,
 	metricStatus *autoscalingv2.MetricValueStatus, timestampProposal time.Time, metricNameProposal string,
 	condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
 	if target.AverageValue != nil {
@@ -572,6 +586,9 @@ func (a *HorizontalController) computeStatusForResourceMetricGeneric(ctx context
 	}
 
 	metricNameProposal = fmt.Sprintf("%s resource utilization (percentage of request)", resourceName)
+	if sourceType == autoscalingv2.ContainerResourceMetricSourceType {
+		metricNameProposal = fmt.Sprintf("%s container resource utilization (percentage of request)", resourceName)
+	}
 	status := autoscalingv2.MetricValueStatus{
 		AverageUtilization: &percentageProposal,
 		AverageValue:       resource.NewMilliQuantity(rawProposal, resource.DecimalSI),
@@ -583,7 +600,7 @@ func (a *HorizontalController) computeStatusForResourceMetricGeneric(ctx context
 func (a *HorizontalController) computeStatusForResourceMetric(ctx context.Context, currentReplicas int32, metricSpec autoscalingv2.MetricSpec, hpa *autoscalingv2.HorizontalPodAutoscaler,
 	selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, timestampProposal time.Time,
 	metricNameProposal string, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
-	replicaCountProposal, metricValueStatus, timestampProposal, metricNameProposal, condition, err := a.computeStatusForResourceMetricGeneric(ctx, currentReplicas, metricSpec.Resource.Target, metricSpec.Resource.Name, hpa.Namespace, "", selector)
+	replicaCountProposal, metricValueStatus, timestampProposal, metricNameProposal, condition, err := a.computeStatusForResourceMetricGeneric(ctx, currentReplicas, metricSpec.Resource.Target, metricSpec.Resource.Name, hpa.Namespace, "", selector, autoscalingv2.ResourceMetricSourceType)
 	if err != nil {
 		condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetResourceMetric", err)
 		return replicaCountProposal, timestampProposal, metricNameProposal, condition, err
@@ -602,7 +619,7 @@ func (a *HorizontalController) computeStatusForResourceMetric(ctx context.Contex
 func (a *HorizontalController) computeStatusForContainerResourceMetric(ctx context.Context, currentReplicas int32, metricSpec autoscalingv2.MetricSpec, hpa *autoscalingv2.HorizontalPodAutoscaler,
 	selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, timestampProposal time.Time,
 	metricNameProposal string, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
-	replicaCountProposal, metricValueStatus, timestampProposal, metricNameProposal, condition, err := a.computeStatusForResourceMetricGeneric(ctx, currentReplicas, metricSpec.ContainerResource.Target, metricSpec.ContainerResource.Name, hpa.Namespace, metricSpec.ContainerResource.Container, selector)
+	replicaCountProposal, metricValueStatus, timestampProposal, metricNameProposal, condition, err := a.computeStatusForResourceMetricGeneric(ctx, currentReplicas, metricSpec.ContainerResource.Target, metricSpec.ContainerResource.Name, hpa.Namespace, metricSpec.ContainerResource.Container, selector, autoscalingv2.ContainerResourceMetricSourceType)
 	if err != nil {
 		condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetContainerResourceMetric", err)
 		return replicaCountProposal, timestampProposal, metricNameProposal, condition, err
@@ -738,6 +755,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 	}
 
 	rescale := true
+	logger := klog.FromContext(ctx)
 
 	if scale.Spec.Replicas == 0 && minReplicas != 0 {
 		// Autoscaling is disabled for this resource
@@ -762,7 +780,11 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 			return fmt.Errorf("failed to compute desired number of replicas based on listed metrics for %s: %v", reference, err)
 		}
 
-		klog.V(4).Infof("proposing %v desired replicas (based on %s from %s) for %s", metricDesiredReplicas, metricName, metricTimestamp, reference)
+		logger.V(4).Info("Proposing desired replicas",
+			"desiredReplicas", metricDesiredReplicas,
+			"metric", metricName,
+			"timestamp", metricTimestamp,
+			"scaleTarget", reference)
 
 		rescaleMetric := ""
 		if metricDesiredReplicas > desiredReplicas {
@@ -798,10 +820,16 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "SucceededRescale", "the HPA controller was able to update the target scale to %d", desiredReplicas)
 		a.eventRecorder.Eventf(hpa, v1.EventTypeNormal, "SuccessfulRescale", "New size: %d; reason: %s", desiredReplicas, rescaleReason)
 		a.storeScaleEvent(hpa.Spec.Behavior, key, currentReplicas, desiredReplicas)
-		klog.Infof("Successful rescale of %s, old size: %d, new size: %d, reason: %s",
-			hpa.Name, currentReplicas, desiredReplicas, rescaleReason)
+		logger.Info("Successfully rescaled",
+			"HPA", klog.KObj(hpa),
+			"currentReplicas", currentReplicas,
+			"desiredReplicas", desiredReplicas,
+			"reason", rescaleReason)
 	} else {
-		klog.V(4).Infof("decided not to scale %s to %v (last scale time was %s)", reference, desiredReplicas, hpa.Status.LastScaleTime)
+		logger.V(4).Info("Decided not to scale",
+			"scaleTarget", reference,
+			"desiredReplicas", desiredReplicas,
+			"lastScaleTime", hpa.Status.LastScaleTime)
 		desiredReplicas = currentReplicas
 	}
 
@@ -1286,7 +1314,8 @@ func (a *HorizontalController) updateStatus(ctx context.Context, hpa *autoscalin
 		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedUpdateStatus", err.Error())
 		return fmt.Errorf("failed to update status for %s: %v", hpa.Name, err)
 	}
-	klog.V(2).Infof("Successfully updated status for %s", hpa.Name)
+	logger := klog.FromContext(ctx)
+	logger.V(2).Info("Successfully updated status", "HPA", klog.KObj(hpa))
 	return nil
 }
 

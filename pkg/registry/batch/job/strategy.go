@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -39,7 +40,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/api/pod"
 	"k8s.io/kubernetes/pkg/apis/batch"
-	"k8s.io/kubernetes/pkg/apis/batch/validation"
+	batchvalidation "k8s.io/kubernetes/pkg/apis/batch/validation"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/features"
 	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
@@ -154,10 +155,10 @@ func (jobStrategy) Validate(ctx context.Context, obj runtime.Object) field.Error
 		generateSelector(job)
 	}
 	opts := validationOptionsForJob(job, nil)
-	return validation.ValidateJob(job, opts)
+	return batchvalidation.ValidateJob(job, opts)
 }
 
-func validationOptionsForJob(newJob, oldJob *batch.Job) validation.JobValidationOptions {
+func validationOptionsForJob(newJob, oldJob *batch.Job) batchvalidation.JobValidationOptions {
 	var newPodTemplate, oldPodTemplate *core.PodTemplateSpec
 	if newJob != nil {
 		newPodTemplate = &newJob.Spec.Template
@@ -165,9 +166,10 @@ func validationOptionsForJob(newJob, oldJob *batch.Job) validation.JobValidation
 	if oldJob != nil {
 		oldPodTemplate = &oldJob.Spec.Template
 	}
-	opts := validation.JobValidationOptions{
+	opts := batchvalidation.JobValidationOptions{
 		PodValidationOptions:    pod.GetValidationOptionsFromPodTemplate(newPodTemplate, oldPodTemplate),
 		AllowTrackingAnnotation: true,
+		AllowElasticIndexedJobs: utilfeature.DefaultFeatureGate.Enabled(features.ElasticIndexedJob),
 	}
 	if oldJob != nil {
 		opts.AllowInvalidLabelValueInSelector = opts.AllowInvalidLabelValueInSelector || metav1validation.LabelSelectorHasInvalidLabelValue(oldJob.Spec.Selector)
@@ -181,18 +183,20 @@ func validationOptionsForJob(newJob, oldJob *batch.Job) validation.JobValidation
 		// only for suspended jobs that never started before.
 		suspended := oldJob.Spec.Suspend != nil && *oldJob.Spec.Suspend
 		notStarted := oldJob.Status.StartTime == nil
-		opts.AllowMutableSchedulingDirectives = utilfeature.DefaultFeatureGate.Enabled(features.JobMutableNodeSchedulingDirectives) &&
-			suspended && notStarted
-
+		opts.AllowMutableSchedulingDirectives = suspended && notStarted
 	}
-
 	return opts
 }
 
 // WarningsOnCreate returns warnings for the creation of the given object.
 func (jobStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
 	newJob := obj.(*batch.Job)
-	return pod.GetWarningsForPodTemplate(ctx, field.NewPath("spec", "template"), &newJob.Spec.Template, nil)
+	var warnings []string
+	if msgs := utilvalidation.IsDNS1123Label(newJob.Name); len(msgs) != 0 {
+		warnings = append(warnings, fmt.Sprintf("metadata.name: this is used in Pod names and hostnames, which can result in surprising behavior; a DNS label is recommended: %v", msgs))
+	}
+	warnings = append(warnings, pod.GetWarningsForPodTemplate(ctx, field.NewPath("spec", "template"), &newJob.Spec.Template, nil)...)
+	return warnings
 }
 
 // generateSelector adds a selector to a job and labels to its template
@@ -207,9 +211,8 @@ func generateSelector(obj *batch.Job) {
 	// a label.
 	_, found := obj.Spec.Template.Labels["job-name"]
 	if found {
-		// User asked us to not automatically generate a selector and labels,
-		// but set a possibly conflicting value.  If there is a conflict,
-		// we will reject in validation.
+		// User asked us to automatically generate a selector, but set manual labels.
+		// If there is a conflict, we will reject in validation.
 	} else {
 		obj.Spec.Template.Labels["job-name"] = string(obj.ObjectMeta.Name)
 	}
@@ -217,9 +220,8 @@ func generateSelector(obj *batch.Job) {
 	// only match this job.
 	_, found = obj.Spec.Template.Labels["controller-uid"]
 	if found {
-		// User asked us to automatically generate a selector and labels,
-		// but set a possibly conflicting value.  If there is a conflict,
-		// we will reject in validation.
+		// User asked us to automatically generate a selector, but set manual labels.
+		// If there is a conflict, we will reject in validation.
 	} else {
 		obj.Spec.Template.Labels["controller-uid"] = string(obj.ObjectMeta.UID)
 	}
@@ -264,8 +266,8 @@ func (jobStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) 
 	oldJob := old.(*batch.Job)
 
 	opts := validationOptionsForJob(job, oldJob)
-	validationErrorList := validation.ValidateJob(job, opts)
-	updateErrorList := validation.ValidateJobUpdate(job, oldJob, opts)
+	validationErrorList := batchvalidation.ValidateJob(job, opts)
+	updateErrorList := batchvalidation.ValidateJobUpdate(job, oldJob, opts)
 	return append(validationErrorList, updateErrorList...)
 }
 
@@ -303,7 +305,7 @@ func (jobStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.
 }
 
 func (jobStatusStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
-	return validation.ValidateJobUpdateStatus(obj.(*batch.Job), old.(*batch.Job))
+	return batchvalidation.ValidateJobUpdateStatus(obj.(*batch.Job), old.(*batch.Job))
 }
 
 // WarningsOnUpdate returns warnings for the given update.

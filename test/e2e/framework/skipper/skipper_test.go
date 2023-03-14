@@ -17,11 +17,11 @@ limitations under the License.
 package skipper_test
 
 import (
-	"context"
 	"flag"
 	"testing"
 
 	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2/reporters"
 
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/framework/internal/output"
@@ -47,10 +47,11 @@ import (
 //
 //
 //
+//
 // This must be line #50.
 
 var _ = ginkgo.Describe("e2e", func() {
-	ginkgo.It("skips", func(ctx context.Context) {
+	ginkgo.It("skips", func() {
 		e2eskipper.Skipf("skipping %d, %d, %d", 1, 3, 4)
 	})
 })
@@ -70,17 +71,24 @@ func TestSkip(t *testing.T) {
 	}
 	framework.AfterReadingAllFlags(&framework.TestContext)
 	suiteConfig, reporterConfig := framework.CreateGinkgoConfig()
+	reporterConfig.Verbose = true
 
-	expected := output.SuiteResults{
-		output.TestResult{
-			Name: "e2e skips",
-			Output: `[It] skips
-  skipper_test.go:53
-INFO: skipping 1, 3, 4
-`,
-			Failure: `skipping 1, 3, 4`,
-			Stack: `k8s.io/kubernetes/test/e2e/framework/skipper_test.glob..func1.1()
-	skipper_test.go:54`,
+	expected := output.TestResult{
+		Suite: reporters.JUnitTestSuite{
+			Tests:    1,
+			Failures: 0,
+			Errors:   0,
+			Disabled: 0,
+			Skipped:  1,
+			TestCases: []reporters.JUnitTestCase{
+				{
+					Name:   "[It] e2e skips",
+					Status: "skipped",
+					Skipped: &reporters.JUnitSkipped{
+						Message: `skipped - skipping 1, 3, 4`,
+					},
+				},
+			},
 		},
 	}
 

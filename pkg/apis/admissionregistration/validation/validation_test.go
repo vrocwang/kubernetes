@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
 	"k8s.io/kubernetes/pkg/apis/admissionregistration"
 )
 
@@ -1999,7 +2001,7 @@ func TestValidateValidatingAdmissionPolicy(t *testing.T) {
 				Spec: admissionregistration.ValidatingAdmissionPolicySpec{},
 			},
 
-			expectedError: `spec.validations: Required value`,
+			expectedError: `spec.validations: Required value: validations or auditAnnotations must contain at least one item`,
 		},
 		{
 			name: "Invalid Validations Reason",
@@ -2563,7 +2565,144 @@ func TestValidateValidatingAdmissionPolicy(t *testing.T) {
 					},
 				},
 			},
-			expectedError: `spec.validations[0].expression: Invalid value: "object.x in [1, 2, ": compilation failed: ERROR: <input>:1:19: Syntax error: missing ']' at '<EOF>`,
+			expectedError: `spec.validations[0].expression: Invalid value: "object.x in [1, 2, ": compilation failed: ERROR: <input>:1:20: Syntax error: missing ']' at '<EOF>`,
+		},
+		{
+			name: "invalid messageExpression",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					Validations: []admissionregistration.Validation{
+						{
+							Expression:        "true",
+							MessageExpression: "object.x in [1, 2, ",
+						},
+					},
+					MatchConstraints: &admissionregistration.MatchResources{
+						ResourceRules: []admissionregistration.NamedRuleWithOperations{
+							{
+								RuleWithOperations: admissionregistration.RuleWithOperations{
+									Operations: []admissionregistration.OperationType{"CREATE"},
+									Rule: admissionregistration.Rule{
+										APIGroups:   []string{"a"},
+										APIVersions: []string{"a"},
+										Resources:   []string{"*/*"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedError: `spec.validations[0].messageExpression: Invalid value: "object.x in [1, 2, ": compilation failed: ERROR: <input>:1:20: Syntax error: missing ']' at '<EOF>`,
+		},
+		{
+			name: "invalid auditAnnotations key due to key name",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					AuditAnnotations: []admissionregistration.AuditAnnotation{
+						{
+							Key:             "@",
+							ValueExpression: "value",
+						},
+					},
+				},
+			},
+			expectedError: `spec.auditAnnotations[0].key: Invalid value: "config/@": name part must consist of alphanumeric characters`,
+		},
+		{
+			name: "auditAnnotations keys must be unique",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					AuditAnnotations: []admissionregistration.AuditAnnotation{
+						{
+							Key:             "a",
+							ValueExpression: "'1'",
+						},
+						{
+							Key:             "a",
+							ValueExpression: "'2'",
+						},
+					},
+				},
+			},
+			expectedError: `spec.auditAnnotations[1].key: Duplicate value: "a"`,
+		},
+		{
+			name: "invalid auditAnnotations key due to metadata.name",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "nope!",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					AuditAnnotations: []admissionregistration.AuditAnnotation{
+						{
+							Key:             "key",
+							ValueExpression: "'value'",
+						},
+					},
+				},
+			},
+			expectedError: `spec.auditAnnotations[0].key: Invalid value: "nope!/key": prefix part a lowercase RFC 1123 subdomain`,
+		},
+		{
+			name: "invalid auditAnnotations key due to length",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "this-is-a-long-name-for-a-admission-policy-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					AuditAnnotations: []admissionregistration.AuditAnnotation{
+						{
+							Key:             "this-is-a-long-name-for-an-audit-annotation-key-xxxxxxxxxxxxxxxxxxxxxxxxxx",
+							ValueExpression: "'value'",
+						},
+					},
+				},
+			},
+			expectedError: `spec.auditAnnotations[0].key: Invalid value`,
+		},
+		{
+			name: "invalid auditAnnotations valueExpression type",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					AuditAnnotations: []admissionregistration.AuditAnnotation{
+						{
+							Key:             "something",
+							ValueExpression: "true",
+						},
+					},
+				},
+			},
+			expectedError: `spec.auditAnnotations[0].valueExpression: Invalid value: "true": must evaluate to one of [string null_type]`,
+		},
+		{
+			name: "invalid auditAnnotations valueExpression",
+			config: &admissionregistration.ValidatingAdmissionPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicySpec{
+					AuditAnnotations: []admissionregistration.AuditAnnotation{
+						{
+							Key:             "something",
+							ValueExpression: "object.x in [1, 2, ",
+						},
+					},
+				},
+			},
+			expectedError: `spec.auditAnnotations[0].valueExpression: Invalid value: "object.x in [1, 2, ": compilation failed: ERROR: <input>:1:19: Syntax error: missing ']' at '<EOF>`,
 		},
 	}
 	for _, test := range tests {
@@ -2580,7 +2719,6 @@ func TestValidateValidatingAdmissionPolicy(t *testing.T) {
 				}
 			}
 		})
-
 	}
 }
 
@@ -2709,6 +2847,7 @@ func TestValidateValidatingAdmissionPolicyUpdate(t *testing.T) {
 				Spec: admissionregistration.ValidatingAdmissionPolicySpec{},
 			},
 		},
+		// TODO: CustomAuditAnnotations: string valueExpression with {oldObject} is allowed
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -2902,6 +3041,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						ResourceRules: []admissionregistration.NamedRuleWithOperations{
 							{
@@ -2931,6 +3071,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"a": "b"},
@@ -2969,6 +3110,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						ResourceRules: []admissionregistration.NamedRuleWithOperations{
 							{
@@ -2998,6 +3140,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						ResourceRules: []admissionregistration.NamedRuleWithOperations{
 							{
@@ -3027,6 +3170,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"a": "b"},
@@ -3065,6 +3209,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						ResourceRules: []admissionregistration.NamedRuleWithOperations{
 							{
@@ -3094,6 +3239,7 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						ResourceRules: []admissionregistration.NamedRuleWithOperations{
 							{
@@ -3111,6 +3257,38 @@ func TestValidateValidatingAdmissionPolicyBinding(t *testing.T) {
 				},
 			},
 			expectedError: `spec.matchResouces.resourceRules[0].resources: Invalid value: []string{"*/*", "a"}: if '*/*' is present, must not specify other resources`,
+		},
+		{
+			name: "validationActions must be unique",
+			config: &admissionregistration.ValidatingAdmissionPolicyBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicyBindingSpec{
+					PolicyName: "xyzlimit-scale.example.com",
+					ParamRef: &admissionregistration.ParamRef{
+						Name: "xyzlimit-scale-setting.example.com",
+					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny, admissionregistration.Deny},
+				},
+			},
+			expectedError: `spec.validationActions[1]: Duplicate value: "Deny"`,
+		},
+		{
+			name: "validationActions must contain supported values",
+			config: &admissionregistration.ValidatingAdmissionPolicyBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "config",
+				},
+				Spec: admissionregistration.ValidatingAdmissionPolicyBindingSpec{
+					PolicyName: "xyzlimit-scale.example.com",
+					ParamRef: &admissionregistration.ParamRef{
+						Name: "xyzlimit-scale-setting.example.com",
+					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.ValidationAction("illegal")},
+				},
+			},
+			expectedError: `Unsupported value: "illegal": supported values: "Audit", "Deny", "Warn"`,
 		},
 	}
 	for _, test := range tests {
@@ -3149,6 +3327,7 @@ func TestValidateValidatingAdmissionPolicyBindingUpdate(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"a": "b"},
@@ -3184,6 +3363,7 @@ func TestValidateValidatingAdmissionPolicyBindingUpdate(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"a": "b"},
@@ -3222,6 +3402,7 @@ func TestValidateValidatingAdmissionPolicyBindingUpdate(t *testing.T) {
 					ParamRef: &admissionregistration.ParamRef{
 						Name: "xyzlimit-scale-setting.example.com",
 					},
+					ValidationActions: []admissionregistration.ValidationAction{admissionregistration.Deny},
 					MatchResources: &admissionregistration.MatchResources{
 						NamespaceSelector: &metav1.LabelSelector{
 							MatchLabels: map[string]string{"a": "b"},
@@ -3271,5 +3452,85 @@ func TestValidateValidatingAdmissionPolicyBindingUpdate(t *testing.T) {
 			}
 		})
 
+	}
+}
+
+func TestValidateValidatingAdmissionPolicyStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		status        *admissionregistration.ValidatingAdmissionPolicyStatus
+		expectedError string
+	}{
+		{
+			name:   "empty",
+			status: &admissionregistration.ValidatingAdmissionPolicyStatus{},
+		},
+		{
+			name: "type checking",
+			status: &admissionregistration.ValidatingAdmissionPolicyStatus{
+				TypeChecking: &admissionregistration.TypeChecking{
+					ExpressionWarnings: []admissionregistration.ExpressionWarning{
+						{
+							FieldRef: "spec.validations[0].expression",
+							Warning:  "message",
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "type checking bad json path",
+			status: &admissionregistration.ValidatingAdmissionPolicyStatus{
+				TypeChecking: &admissionregistration.TypeChecking{
+					ExpressionWarnings: []admissionregistration.ExpressionWarning{
+						{
+							FieldRef: "spec[foo]",
+							Warning:  "message",
+						},
+					},
+				},
+			},
+			expectedError: "invalid JSONPath: invalid array index foo",
+		},
+		{
+			name: "type checking missing warning",
+			status: &admissionregistration.ValidatingAdmissionPolicyStatus{
+				TypeChecking: &admissionregistration.TypeChecking{
+					ExpressionWarnings: []admissionregistration.ExpressionWarning{
+						{
+							FieldRef: "spec.validations[0].expression",
+						},
+					},
+				},
+			},
+			expectedError: "Required value",
+		},
+		{
+			name: "type checking missing fieldRef",
+			status: &admissionregistration.ValidatingAdmissionPolicyStatus{
+				TypeChecking: &admissionregistration.TypeChecking{
+					ExpressionWarnings: []admissionregistration.ExpressionWarning{
+						{
+							Warning: "message",
+						},
+					},
+				},
+			},
+			expectedError: "Required value",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateValidatingAdmissionPolicyStatus(tc.status, field.NewPath("status"))
+			err := errs.ToAggregate()
+			if err != nil {
+				if e, a := tc.expectedError, err.Error(); !strings.Contains(a, e) || e == "" {
+					t.Errorf("expected to contain %s, got %s", e, a)
+				}
+			} else {
+				if tc.expectedError != "" {
+					t.Errorf("unexpected no error, expected to contain %s", tc.expectedError)
+				}
+			}
+		})
 	}
 }

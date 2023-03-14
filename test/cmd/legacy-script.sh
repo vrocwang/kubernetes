@@ -504,7 +504,17 @@ runTests() {
   # Assert short name     #
   #########################
 
-  record_command run_assert_short_name_tests
+  if kube::test::if_supports_resource "${customresourcedefinitions}" && kube::test::if_supports_resource "${pods}" && kube::test::if_supports_resource "${configmaps}" ; then
+    record_command run_assert_short_name_tests
+  fi
+
+  #########################
+  # Assert singular name  #
+  #########################
+
+  if kube::test::if_supports_resource "${customresourcedefinitions}" && kube::test::if_supports_resource "${pods}" ; then
+    record_command run_assert_singular_name_tests
+  fi
 
   #########################
   # Assert categories     #
@@ -1001,9 +1011,13 @@ runTests() {
   ####################
   if kube::test::if_supports_resource "${pods}" ; then
     record_command run_kubectl_debug_pod_tests
+    record_command run_kubectl_debug_general_tests
+    record_command run_kubectl_debug_baseline_tests
   fi
   if kube::test::if_supports_resource "${nodes}" ; then
     record_command run_kubectl_debug_node_tests
+    record_command run_kubectl_debug_general_node_tests
+    record_command run_kubectl_debug_baseline_node_tests
   fi
 
   cleanup_tests

@@ -18,11 +18,14 @@ package validation
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
+
 	v1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	unversionedvalidation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/labels"
@@ -373,7 +376,7 @@ func ValidateJobUpdateStatus(job, oldJob *batch.Job) field.ErrorList {
 func ValidateJobSpecUpdate(spec, oldSpec batch.JobSpec, fldPath *field.Path, opts JobValidationOptions) field.ErrorList {
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, ValidateJobSpec(&spec, fldPath, opts.PodValidationOptions)...)
-	allErrs = append(allErrs, apivalidation.ValidateImmutableField(spec.Completions, oldSpec.Completions, fldPath.Child("completions"))...)
+	allErrs = append(allErrs, validateCompletions(spec, oldSpec, fldPath.Child("completions"), opts)...)
 	allErrs = append(allErrs, apivalidation.ValidateImmutableField(spec.Selector, oldSpec.Selector, fldPath.Child("selector"))...)
 	allErrs = append(allErrs, validatePodTemplateUpdate(spec, oldSpec, fldPath, opts)...)
 	allErrs = append(allErrs, apivalidation.ValidateImmutableField(spec.CompletionMode, oldSpec.CompletionMode, fldPath.Child("completionMode"))...)
@@ -401,10 +404,11 @@ func validatePodTemplateUpdate(spec, oldSpec batch.JobSpec, fldPath *field.Path,
 			// allow the NodeAffinity field to skip immutability checking
 			oldTemplate.Spec.Affinity.NodeAffinity = template.Spec.Affinity.NodeAffinity // +k8s:verify-mutation:reason=clone
 		}
-		oldTemplate.Spec.NodeSelector = template.Spec.NodeSelector // +k8s:verify-mutation:reason=clone
-		oldTemplate.Spec.Tolerations = template.Spec.Tolerations   // +k8s:verify-mutation:reason=clone
-		oldTemplate.Annotations = template.Annotations             // +k8s:verify-mutation:reason=clone
-		oldTemplate.Labels = template.Labels                       // +k8s:verify-mutation:reason=clone
+		oldTemplate.Spec.NodeSelector = template.Spec.NodeSelector       // +k8s:verify-mutation:reason=clone
+		oldTemplate.Spec.Tolerations = template.Spec.Tolerations         // +k8s:verify-mutation:reason=clone
+		oldTemplate.Annotations = template.Annotations                   // +k8s:verify-mutation:reason=clone
+		oldTemplate.Labels = template.Labels                             // +k8s:verify-mutation:reason=clone
+		oldTemplate.Spec.SchedulingGates = template.Spec.SchedulingGates // +k8s:verify-mutation:reason=clone
 	}
 	allErrs = append(allErrs, apivalidation.ValidateImmutableField(template, oldTemplate, fldPath.Child("template"))...)
 	return allErrs
@@ -502,6 +506,16 @@ func validateScheduleFormat(schedule string, timeZone *string, fldPath *field.Pa
 	return allErrs
 }
 
+// https://data.iana.org/time-zones/theory.html#naming
+// * A name must not be empty, or contain '//', or start or end with '/'.
+// * Do not use the file name components '.' and '..'.
+// * Within a file name component, use only ASCII letters, '.', '-' and '_'.
+// * Do not use digits, as that might create an ambiguity with POSIX TZ strings.
+// * A file name component must not exceed 14 characters or start with '-'
+//
+// 0-9 and + characters are tolerated to accommodate legacy compatibility names
+var validTimeZoneCharacters = regexp.MustCompile(`^[A-Za-z\.\-_0-9+]{1,14}$`)
+
 func validateTimeZone(timeZone *string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if timeZone == nil {
@@ -513,6 +527,13 @@ func validateTimeZone(timeZone *string, fldPath *field.Path) field.ErrorList {
 		return allErrs
 	}
 
+	for _, part := range strings.Split(*timeZone, "/") {
+		if part == "." || part == ".." || strings.HasPrefix(part, "-") || !validTimeZoneCharacters.MatchString(part) {
+			allErrs = append(allErrs, field.Invalid(fldPath, timeZone, fmt.Sprintf("unknown time zone %s", *timeZone)))
+			return allErrs
+		}
+	}
+
 	if strings.EqualFold(*timeZone, "Local") {
 		allErrs = append(allErrs, field.Invalid(fldPath, timeZone, "timeZone must be an explicit time zone as defined in https://www.iana.org/time-zones"))
 	}
@@ -521,14 +542,6 @@ func validateTimeZone(timeZone *string, fldPath *field.Path) field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(fldPath, timeZone, err.Error()))
 	}
 
-	return allErrs
-}
-
-// ValidateJobTemplate validates a JobTemplate and returns an ErrorList with any errors.
-func ValidateJobTemplate(job *batch.JobTemplate, opts apivalidation.PodValidationOptions) field.ErrorList {
-	// this method should be identical to ValidateJob
-	allErrs := apivalidation.ValidateObjectMeta(&job.ObjectMeta, true, apivalidation.ValidateReplicationControllerName, field.NewPath("metadata"))
-	allErrs = append(allErrs, ValidateJobTemplateSpec(&job.Template, field.NewPath("template"), opts)...)
 	return allErrs
 }
 
@@ -546,10 +559,41 @@ func ValidateJobTemplateSpec(spec *batch.JobTemplateSpec, fldPath *field.Path, o
 	return allErrs
 }
 
+func validateCompletions(spec, oldSpec batch.JobSpec, fldPath *field.Path, opts JobValidationOptions) field.ErrorList {
+	if !opts.AllowElasticIndexedJobs {
+		return apivalidation.ValidateImmutableField(spec.Completions, oldSpec.Completions, fldPath)
+	}
+
+	// Completions is immutable for non-indexed jobs.
+	// For Indexed Jobs, if ElasticIndexedJob feature gate is not enabled,
+	// fall back to validating that spec.Completions is always immutable.
+	isIndexedJob := spec.CompletionMode != nil && *spec.CompletionMode == batch.IndexedCompletion
+	if !isIndexedJob {
+		return apivalidation.ValidateImmutableField(spec.Completions, oldSpec.Completions, fldPath)
+	}
+
+	var allErrs field.ErrorList
+	if apiequality.Semantic.DeepEqual(spec.Completions, oldSpec.Completions) {
+		return allErrs
+	}
+	// Indexed Jobs cannot set completions to nil. The nil check
+	// is already performed in validateJobSpec, no need to add another error.
+	if spec.Completions == nil {
+		return allErrs
+	}
+
+	if *spec.Completions != *spec.Parallelism {
+		allErrs = append(allErrs, field.Invalid(fldPath, spec.Completions, fmt.Sprintf("can only be modified in tandem with %s", fldPath.Root().Child("parallelism").String())))
+	}
+	return allErrs
+}
+
 type JobValidationOptions struct {
 	apivalidation.PodValidationOptions
 	// Allow Job to have the annotation batch.kubernetes.io/job-tracking
 	AllowTrackingAnnotation bool
 	// Allow mutable node affinity, selector and tolerations of the template
 	AllowMutableSchedulingDirectives bool
+	// Allow elastic indexed jobs
+	AllowElasticIndexedJobs bool
 }

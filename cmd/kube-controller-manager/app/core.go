@@ -105,6 +105,11 @@ func startNodeIpamController(ctx context.Context, controllerContext ControllerCo
 		return nil, false, nil
 	}
 
+	// Cannot run cloud ipam controller if cloud provider is nil (--cloud-provider not set or set to 'external')
+	if controllerContext.Cloud == nil && controllerContext.ComponentConfig.KubeCloudShared.CIDRAllocatorType == string(ipam.CloudAllocatorType) {
+		return nil, false, errors.New("--cidr-allocator-type is set to 'CloudAllocator' but cloud provider is not configured")
+	}
+
 	clusterCIDRs, err := validateCIDRs(controllerContext.ComponentConfig.KubeCloudShared.ClusterCIDR)
 	if err != nil {
 		return nil, false, err
@@ -149,7 +154,9 @@ func startNodeIpamController(ctx context.Context, controllerContext ControllerCo
 		clusterCIDRInformer = controllerContext.InformerFactory.Networking().V1alpha1().ClusterCIDRs()
 	}
 
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "NodeIpamController"))
 	nodeIpamController, err := nodeipamcontroller.NewNodeIpamController(
+		ctx,
 		controllerContext.InformerFactory.Core().V1().Nodes(),
 		clusterCIDRInformer,
 		controllerContext.Cloud,
@@ -163,7 +170,7 @@ func startNodeIpamController(ctx context.Context, controllerContext ControllerCo
 	if err != nil {
 		return nil, true, err
 	}
-	go nodeIpamController.RunWithMetrics(ctx.Done(), controllerContext.ControllerManagerMetrics)
+	go nodeIpamController.RunWithMetrics(ctx, controllerContext.ControllerManagerMetrics)
 	return nil, true, nil
 }
 
@@ -179,12 +186,10 @@ func startNodeLifecycleController(ctx context.Context, controllerContext Control
 		controllerContext.ComponentConfig.KubeCloudShared.NodeMonitorPeriod.Duration,
 		controllerContext.ComponentConfig.NodeLifecycleController.NodeStartupGracePeriod.Duration,
 		controllerContext.ComponentConfig.NodeLifecycleController.NodeMonitorGracePeriod.Duration,
-		controllerContext.ComponentConfig.NodeLifecycleController.PodEvictionTimeout.Duration,
 		controllerContext.ComponentConfig.NodeLifecycleController.NodeEvictionRate,
 		controllerContext.ComponentConfig.NodeLifecycleController.SecondaryNodeEvictionRate,
 		controllerContext.ComponentConfig.NodeLifecycleController.LargeClusterSizeThreshold,
 		controllerContext.ComponentConfig.NodeLifecycleController.UnhealthyZoneThreshold,
-		controllerContext.ComponentConfig.NodeLifecycleController.EnableTaintManager,
 	)
 	if err != nil {
 		return nil, true, err
@@ -364,8 +369,8 @@ func startResourceClaimController(ctx context.Context, controllerContext Control
 	ephemeralController, err := resourceclaim.NewController(
 		controllerContext.ClientBuilder.ClientOrDie("resource-claim-controller"),
 		controllerContext.InformerFactory.Core().V1().Pods(),
-		controllerContext.InformerFactory.Resource().V1alpha1().ResourceClaims(),
-		controllerContext.InformerFactory.Resource().V1alpha1().ResourceClaimTemplates())
+		controllerContext.InformerFactory.Resource().V1alpha2().ResourceClaims(),
+		controllerContext.InformerFactory.Resource().V1alpha2().ResourceClaimTemplates())
 	if err != nil {
 		return nil, true, fmt.Errorf("failed to start ephemeral volume controller: %v", err)
 	}
@@ -406,6 +411,7 @@ func startPodGCController(ctx context.Context, controllerContext ControllerConte
 }
 
 func startResourceQuotaController(ctx context.Context, controllerContext ControllerContext) (controller.Interface, bool, error) {
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "resourcequota-controller"))
 	resourceQuotaControllerClient := controllerContext.ClientBuilder.ClientOrDie("resourcequota-controller")
 	resourceQuotaControllerDiscoveryClient := controllerContext.ClientBuilder.DiscoveryClientOrDie("resourcequota-controller")
 	discoveryFunc := resourceQuotaControllerDiscoveryClient.ServerPreferredNamespacedResources
@@ -424,14 +430,14 @@ func startResourceQuotaController(ctx context.Context, controllerContext Control
 		Registry:                  generic.NewRegistry(quotaConfiguration.Evaluators()),
 		UpdateFilter:              quotainstall.DefaultUpdateFilter(),
 	}
-	resourceQuotaController, err := resourcequotacontroller.NewController(resourceQuotaControllerOptions)
+	resourceQuotaController, err := resourcequotacontroller.NewController(ctx, resourceQuotaControllerOptions)
 	if err != nil {
 		return nil, false, err
 	}
 	go resourceQuotaController.Run(ctx, int(controllerContext.ComponentConfig.ResourceQuotaController.ConcurrentResourceQuotaSyncs))
 
 	// Periodically the quota controller to detect new resource types
-	go resourceQuotaController.Sync(discoveryFunc, 30*time.Second, ctx.Done())
+	go resourceQuotaController.Sync(ctx, discoveryFunc, 30*time.Second)
 
 	return nil, true, nil
 }
@@ -456,7 +462,9 @@ func startModifiedNamespaceController(ctx context.Context, controllerContext Con
 
 	discoverResourcesFn := namespaceKubeClient.Discovery().ServerPreferredNamespacedResources
 
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "namespace"))
 	namespaceController := namespacecontroller.NewNamespaceController(
+		ctx,
 		namespaceKubeClient,
 		metadataClient,
 		discoverResourcesFn,
@@ -464,7 +472,7 @@ func startModifiedNamespaceController(ctx context.Context, controllerContext Con
 		controllerContext.ComponentConfig.NamespaceController.NamespaceSyncPeriod.Duration,
 		v1.FinalizerKubernetes,
 	)
-	go namespaceController.Run(int(controllerContext.ComponentConfig.NamespaceController.ConcurrentNamespaceSyncs), ctx.Done())
+	go namespaceController.Run(ctx, int(controllerContext.ComponentConfig.NamespaceController.ConcurrentNamespaceSyncs))
 
 	return nil, true, nil
 }
@@ -484,7 +492,9 @@ func startServiceAccountController(ctx context.Context, controllerContext Contro
 }
 
 func startTTLController(ctx context.Context, controllerContext ControllerContext) (controller.Interface, bool, error) {
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "ttl"))
 	go ttlcontroller.NewTTLController(
+		ctx,
 		controllerContext.InformerFactory.Core().V1().Nodes(),
 		controllerContext.ClientBuilder.ClientOrDie("ttl-controller"),
 	).Run(ctx, 5)
@@ -495,6 +505,8 @@ func startGarbageCollectorController(ctx context.Context, controllerContext Cont
 	if !controllerContext.ComponentConfig.GarbageCollectorController.EnableGarbageCollector {
 		return nil, false, nil
 	}
+
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "garbagecollector"))
 
 	gcClientset := controllerContext.ClientBuilder.ClientOrDie("generic-garbage-collector")
 	discoveryClient := controllerContext.ClientBuilder.DiscoveryClientOrDie("generic-garbage-collector")
@@ -530,7 +542,7 @@ func startGarbageCollectorController(ctx context.Context, controllerContext Cont
 
 	// Periodically refresh the RESTMapper with new discovery information and sync
 	// the garbage collector.
-	go garbageCollector.Sync(discoveryClient, 30*time.Second, ctx.Done())
+	go garbageCollector.Sync(ctx, discoveryClient, 30*time.Second)
 
 	return garbageCollector, true, nil
 }
@@ -557,7 +569,9 @@ func startPVProtectionController(ctx context.Context, controllerContext Controll
 }
 
 func startTTLAfterFinishedController(ctx context.Context, controllerContext ControllerContext) (controller.Interface, bool, error) {
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "ttlafterfinished"))
 	go ttlafterfinished.New(
+		ctx,
 		controllerContext.InformerFactory.Batch().V1().Jobs(),
 		controllerContext.ClientBuilder.ClientOrDie("ttl-after-finished-controller"),
 	).Run(ctx, int(controllerContext.ComponentConfig.TTLAfterFinishedController.ConcurrentTTLSyncs))
@@ -681,7 +695,9 @@ func setNodeCIDRMaskSizes(cfg nodeipamconfig.NodeIPAMControllerConfiguration, cl
 }
 
 func startStorageVersionGCController(ctx context.Context, controllerContext ControllerContext) (controller.Interface, bool, error) {
+	ctx = klog.NewContext(ctx, klog.LoggerWithName(klog.FromContext(ctx), "storageVersionGC"))
 	go storageversiongc.NewStorageVersionGC(
+		ctx,
 		controllerContext.ClientBuilder.ClientOrDie("storage-version-garbage-collector"),
 		controllerContext.InformerFactory.Coordination().V1().Leases(),
 		controllerContext.InformerFactory.Internal().V1alpha1().StorageVersions(),

@@ -19,7 +19,6 @@ package disruption
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	apps "k8s.io/api/apps/v1beta1"
@@ -648,7 +647,7 @@ func (dc *DisruptionController) processNextStalePodDisruptionWorkItem(ctx contex
 	defer dc.stalePodDisruptionQueue.Done(key)
 	err := dc.syncStalePodDisruption(ctx, key.(string))
 	if err == nil {
-		dc.queue.Forget(key)
+		dc.stalePodDisruptionQueue.Forget(key)
 		return true
 	}
 	utilruntime.HandleError(fmt.Errorf("error syncing Pod %v to clear DisruptionTarget condition, requeueing: %v", key.(string), err))
@@ -706,8 +705,11 @@ func (dc *DisruptionController) trySync(ctx context.Context, pdb *policy.PodDisr
 	}
 	// We have unmamanged pods, instead of erroring and hotlooping in disruption controller, log and continue.
 	if len(unmanagedPods) > 0 {
-		klog.V(4).Infof("found unmanaged pods associated with this PDB: %v",
-			strings.Join(unmanagedPods, ",'"))
+		klog.Warningf("found unmanaged pods associated with this PDB: %v", unmanagedPods)
+		dc.recorder.Eventf(pdb, v1.EventTypeWarning, "UnmanagedPods", "Pods selected by this PodDisruptionBudget (selector: %v) were found "+
+			"to be unmanaged. As a result, the status of the PDB cannot be calculated correctly, which may result in undefined behavior. "+
+			"To account for these pods please set \".spec.minAvailable\" "+
+			"field of the PDB to an integer value.", pdb.Spec.Selector)
 	}
 
 	currentTime := dc.clock.Now()

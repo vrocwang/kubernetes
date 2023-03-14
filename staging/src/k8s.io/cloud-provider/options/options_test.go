@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/diff"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
 	cpconfig "k8s.io/cloud-provider/config"
+	nodeconfig "k8s.io/cloud-provider/controllers/node/config"
 	serviceconfig "k8s.io/cloud-provider/controllers/service/config"
 	componentbaseconfig "k8s.io/component-base/config"
 	cmconfig "k8s.io/controller-manager/config"
@@ -43,6 +44,7 @@ func TestDefaultFlags(t *testing.T) {
 				Address:         "0.0.0.0",
 				MinResyncPeriod: metav1.Duration{Duration: 12 * time.Hour},
 				ClientConnection: componentbaseconfig.ClientConnectionConfiguration{
+					Kubeconfig:  "",
 					ContentType: "application/vnd.kubernetes.protobuf",
 					QPS:         20.0,
 					Burst:       30,
@@ -84,6 +86,11 @@ func TestDefaultFlags(t *testing.T) {
 				},
 			},
 		},
+		NodeController: &NodeControllerOptions{
+			NodeControllerConfiguration: &nodeconfig.NodeControllerConfiguration{
+				ConcurrentNodeSyncs: 1,
+			},
+		},
 		ServiceController: &ServiceControllerOptions{
 			ServiceControllerConfiguration: &serviceconfig.ServiceControllerConfiguration{
 				ConcurrentServiceSyncs: 1,
@@ -119,7 +126,6 @@ func TestDefaultFlags(t *testing.T) {
 			AlwaysAllowPaths:             []string{"/healthz", "/readyz", "/livez"}, // note: this does not match /healthz/ or /healthz/*
 			AlwaysAllowGroups:            []string{"system:masters"},
 		},
-		Kubeconfig:                "",
 		Master:                    "",
 		NodeStatusUpdateFrequency: metav1.Duration{Duration: 5 * time.Minute},
 	}
@@ -169,6 +175,7 @@ func TestAddFlags(t *testing.T) {
 		"--route-reconciliation-period=30s",
 		"--secure-port=10001",
 		"--use-service-account-credentials=false",
+		"--concurrent-node-syncs=5",
 	}
 	err = fs.Parse(args)
 	if err != nil {
@@ -181,6 +188,7 @@ func TestAddFlags(t *testing.T) {
 				Address:         "0.0.0.0",
 				MinResyncPeriod: metav1.Duration{Duration: 100 * time.Minute},
 				ClientConnection: componentbaseconfig.ClientConnectionConfiguration{
+					Kubeconfig:  "/kubeconfig",
 					ContentType: "application/vnd.kubernetes.protobuf",
 					QPS:         50.0,
 					Burst:       100,
@@ -222,6 +230,11 @@ func TestAddFlags(t *testing.T) {
 				},
 			},
 		},
+		NodeController: &NodeControllerOptions{
+			NodeControllerConfiguration: &nodeconfig.NodeControllerConfiguration{
+				ConcurrentNodeSyncs: 5,
+			},
+		},
 		ServiceController: &ServiceControllerOptions{
 			ServiceControllerConfiguration: &serviceconfig.ServiceControllerConfiguration{
 				ConcurrentServiceSyncs: 1,
@@ -257,7 +270,6 @@ func TestAddFlags(t *testing.T) {
 			AlwaysAllowPaths:             []string{},
 			AlwaysAllowGroups:            []string{"system:masters"},
 		},
-		Kubeconfig:                "/kubeconfig",
 		Master:                    "192.168.4.20",
 		NodeStatusUpdateFrequency: metav1.Duration{Duration: 10 * time.Minute},
 	}

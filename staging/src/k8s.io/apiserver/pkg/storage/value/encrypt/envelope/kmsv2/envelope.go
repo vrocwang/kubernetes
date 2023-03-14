@@ -22,7 +22,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -31,94 +30,73 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/storage/value"
 	kmstypes "k8s.io/apiserver/pkg/storage/value/encrypt/envelope/kmsv2/v2alpha1"
 	"k8s.io/apiserver/pkg/storage/value/encrypt/envelope/metrics"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/lru"
+	kmsservice "k8s.io/kms/pkg/service"
+	"k8s.io/utils/clock"
 )
+
+func init() {
+	value.RegisterMetrics()
+	metrics.RegisterMetrics()
+}
 
 const (
 	// KMSAPIVersion is the version of the KMS API.
 	KMSAPIVersion = "v2alpha1"
 	// annotationsMaxSize is the maximum size of the annotations.
 	annotationsMaxSize = 32 * 1024 // 32 kB
-	// keyIDMaxSize is the maximum size of the keyID.
-	keyIDMaxSize = 1 * 1024 // 1 kB
+	// KeyIDMaxSize is the maximum size of the keyID.
+	KeyIDMaxSize = 1 * 1024 // 1 kB
 	// encryptedDEKMaxSize is the maximum size of the encrypted DEK.
 	encryptedDEKMaxSize = 1 * 1024 // 1 kB
+	// cacheTTL is the default time-to-live for the cache entry.
+	cacheTTL = 1 * time.Hour
+	// error code
+	errKeyIDOKCode      ErrCodeKeyID = "ok"
+	errKeyIDEmptyCode   ErrCodeKeyID = "empty"
+	errKeyIDTooLongCode ErrCodeKeyID = "too_long"
 )
 
-// Service allows encrypting and decrypting data using an external Key Management Service.
-type Service interface {
-	// Decrypt a given bytearray to obtain the original data as bytes.
-	Decrypt(ctx context.Context, uid string, req *DecryptRequest) ([]byte, error)
-	// Encrypt bytes to a ciphertext.
-	Encrypt(ctx context.Context, uid string, data []byte) (*EncryptResponse, error)
-	// Status returns the status of the KMS.
-	Status(ctx context.Context) (*StatusResponse, error)
-}
+type KeyIDGetterFunc func(context.Context) (keyID string, err error)
+type ProbeHealthzCheckFunc func(context.Context) (err error)
+type ErrCodeKeyID string
 
 type envelopeTransformer struct {
-	envelopeService Service
-
-	// transformers is a thread-safe LRU cache which caches decrypted DEKs indexed by their encrypted form.
-	transformers *lru.Cache
+	envelopeService   kmsservice.Service
+	providerName      string
+	keyIDGetter       KeyIDGetterFunc
+	probeHealthzCheck ProbeHealthzCheckFunc
 
 	// baseTransformerFunc creates a new transformer for encrypting the data with the DEK.
 	baseTransformerFunc func(cipher.Block) value.Transformer
-
-	cacheSize    int
-	cacheEnabled bool
-}
-
-// EncryptResponse is the response from the Envelope service when encrypting data.
-type EncryptResponse struct {
-	Ciphertext  []byte
-	KeyID       string
-	Annotations map[string][]byte
-}
-
-// DecryptRequest is the request to the Envelope service when decrypting data.
-type DecryptRequest struct {
-	Ciphertext  []byte
-	KeyID       string
-	Annotations map[string][]byte
-}
-
-// StatusResponse is the response from the Envelope service when getting the status of the service.
-type StatusResponse struct {
-	Version string
-	Healthz string
-	KeyID   string
+	// cache is a thread-safe expiring lru cache which caches decrypted DEKs indexed by their encrypted form.
+	cache *simpleCache
 }
 
 // NewEnvelopeTransformer returns a transformer which implements a KEK-DEK based envelope encryption scheme.
 // It uses envelopeService to encrypt and decrypt DEKs. Respective DEKs (in encrypted form) are prepended to
-// the data items they encrypt. A cache (of size cacheSize) is maintained to store the most recently
-// used decrypted DEKs in memory.
-func NewEnvelopeTransformer(envelopeService Service, cacheSize int, baseTransformerFunc func(cipher.Block) value.Transformer) value.Transformer {
-	var cache *lru.Cache
+// the data items they encrypt.
+func NewEnvelopeTransformer(envelopeService kmsservice.Service, providerName string, keyIDGetter KeyIDGetterFunc, probeHealthzCheck ProbeHealthzCheckFunc, baseTransformerFunc func(cipher.Block) value.Transformer) value.Transformer {
+	return newEnvelopeTransformerWithClock(envelopeService, providerName, keyIDGetter, probeHealthzCheck, baseTransformerFunc, cacheTTL, clock.RealClock{})
+}
 
-	if cacheSize > 0 {
-		// TODO(aramase): Switch to using expiring cache: kubernetes/kubernetes/staging/src/k8s.io/apimachinery/pkg/util/cache/expiring.go.
-		// It handles scans a lot better, doesn't have to be right sized, and don't have a global lock on reads.
-		cache = lru.New(cacheSize)
-	}
-
+func newEnvelopeTransformerWithClock(envelopeService kmsservice.Service, providerName string, keyIDGetter KeyIDGetterFunc, probeHealthzCheck ProbeHealthzCheckFunc, baseTransformerFunc func(cipher.Block) value.Transformer, cacheTTL time.Duration, clock clock.Clock) value.Transformer {
 	return &envelopeTransformer{
 		envelopeService:     envelopeService,
-		transformers:        cache,
+		providerName:        providerName,
+		keyIDGetter:         keyIDGetter,
+		probeHealthzCheck:   probeHealthzCheck,
+		cache:               newSimpleCache(clock, cacheTTL),
 		baseTransformerFunc: baseTransformerFunc,
-		cacheEnabled:        cacheSize > 0,
-		cacheSize:           cacheSize,
 	}
 }
 
 // TransformFromStorage decrypts data encrypted by this transformer using envelope encryption.
 func (t *envelopeTransformer) TransformFromStorage(ctx context.Context, data []byte, dataCtx value.Context) ([]byte, bool, error) {
-	metrics.RecordArrival(metrics.FromStorageLabel, time.Now())
-
 	// Deserialize the EncryptedObject from the data.
 	encryptedObject, err := t.doDecode(data)
 	if err != nil {
@@ -126,14 +104,17 @@ func (t *envelopeTransformer) TransformFromStorage(ctx context.Context, data []b
 	}
 
 	// Look up the decrypted DEK from cache or Envelope.
-	transformer := t.getTransformer(encryptedObject.EncryptedDEK)
+	transformer := t.cache.get(encryptedObject.EncryptedDEK)
 	if transformer == nil {
-		if t.cacheEnabled {
-			value.RecordCacheMiss()
-		}
+		value.RecordCacheMiss()
+
+		requestInfo := getRequestInfoFromContext(ctx)
 		uid := string(uuid.NewUUID())
-		klog.V(6).InfoS("Decrypting content using envelope service", "uid", uid, "key", string(dataCtx.AuthenticatedData()))
-		key, err := t.envelopeService.Decrypt(ctx, uid, &DecryptRequest{
+		klog.V(6).InfoS("decrypting content using envelope service", "uid", uid, "key", string(dataCtx.AuthenticatedData()),
+			"group", requestInfo.APIGroup, "version", requestInfo.APIVersion, "resource", requestInfo.Resource, "subresource", requestInfo.Subresource,
+			"verb", requestInfo.Verb, "namespace", requestInfo.Namespace, "name", requestInfo.Name)
+
+		key, err := t.envelopeService.Decrypt(ctx, uid, &kmsservice.DecryptRequest{
 			Ciphertext:  encryptedObject.EncryptedDEK,
 			KeyID:       encryptedObject.KeyID,
 			Annotations: encryptedObject.Annotations,
@@ -147,20 +128,39 @@ func (t *envelopeTransformer) TransformFromStorage(ctx context.Context, data []b
 			return nil, false, err
 		}
 	}
+	// It's possible to record empty keyID
+	metrics.RecordKeyID(metrics.FromStorageLabel, t.providerName, encryptedObject.KeyID)
 
-	return transformer.TransformFromStorage(ctx, encryptedObject.EncryptedData, dataCtx)
+	out, stale, err := transformer.TransformFromStorage(ctx, encryptedObject.EncryptedData, dataCtx)
+	if err != nil {
+		return nil, false, err
+	}
+	if stale {
+		return out, stale, nil
+	}
+
+	// Check keyID freshness in addition to data staleness
+	keyID, err := t.keyIDGetter(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return out, encryptedObject.KeyID != keyID, nil
+
 }
 
 // TransformToStorage encrypts data to be written to disk using envelope encryption.
 func (t *envelopeTransformer) TransformToStorage(ctx context.Context, data []byte, dataCtx value.Context) ([]byte, error) {
-	metrics.RecordArrival(metrics.ToStorageLabel, time.Now())
 	newKey, err := generateKey(32)
 	if err != nil {
 		return nil, err
 	}
 
+	requestInfo := getRequestInfoFromContext(ctx)
 	uid := string(uuid.NewUUID())
-	klog.V(6).InfoS("Encrypting content using envelope service", "uid", uid, "key", string(dataCtx.AuthenticatedData()))
+	klog.V(6).InfoS("encrypting content using envelope service", "uid", uid, "key", string(dataCtx.AuthenticatedData()),
+		"group", requestInfo.APIGroup, "version", requestInfo.APIVersion, "resource", requestInfo.Resource, "subresource", requestInfo.Subresource,
+		"verb", requestInfo.Verb, "namespace", requestInfo.Namespace, "name", requestInfo.Name)
 	resp, err := t.envelopeService.Encrypt(ctx, uid, newKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt DEK, error: %w", err)
@@ -176,11 +176,24 @@ func (t *envelopeTransformer) TransformToStorage(ctx context.Context, data []byt
 		return nil, err
 	}
 
+	metrics.RecordKeyID(metrics.ToStorageLabel, t.providerName, resp.KeyID)
+
 	encObject := &kmstypes.EncryptedObject{
 		KeyID:         resp.KeyID,
 		EncryptedDEK:  resp.Ciphertext,
 		EncryptedData: result,
 		Annotations:   resp.Annotations,
+	}
+
+	// Check keyID freshness and write to log if key IDs are different
+	statusKeyID, err := t.keyIDGetter(ctx)
+	if err == nil && encObject.KeyID != statusKeyID {
+		klog.V(2).InfoS("observed different key IDs when encrypting content using kms v2 envelope service", "uid", uid, "objectKeyID", encObject.KeyID, "statusKeyID", statusKeyID, "providerName", t.providerName)
+
+		// trigger health probe check immediately to ensure keyID freshness
+		if err := t.probeHealthzCheck(ctx); err != nil {
+			klog.V(2).ErrorS(err, "kms plugin failed health check probe", "name", t.providerName)
+		}
 	}
 
 	// Serialize the EncryptedObject to a byte array.
@@ -194,26 +207,9 @@ func (t *envelopeTransformer) addTransformer(encKey []byte, key []byte) (value.T
 		return nil, err
 	}
 	transformer := t.baseTransformerFunc(block)
-	// Use base64 of encKey as the key into the cache because hashicorp/golang-lru
-	// cannot hash []uint8.
-	if t.cacheEnabled {
-		t.transformers.Add(base64.StdEncoding.EncodeToString(encKey), transformer)
-		metrics.RecordDekCacheFillPercent(float64(t.transformers.Len()) / float64(t.cacheSize))
-	}
+	// TODO(aramase): Add metrics for cache fill percentage with custom cache implementation.
+	t.cache.set(encKey, transformer)
 	return transformer, nil
-}
-
-// getTransformer fetches the transformer corresponding to encKey from cache, if it exists.
-func (t *envelopeTransformer) getTransformer(encKey []byte) value.Transformer {
-	if !t.cacheEnabled {
-		return nil
-	}
-
-	_transformer, found := t.transformers.Get(base64.StdEncoding.EncodeToString(encKey))
-	if found {
-		return _transformer.(value.Transformer)
-	}
-	return nil
 }
 
 // doEncode encodes the EncryptedObject to a byte array.
@@ -261,7 +257,7 @@ func validateEncryptedObject(o *kmstypes.EncryptedObject) error {
 	if err := validateEncryptedDEK(o.EncryptedDEK); err != nil {
 		return fmt.Errorf("failed to validate encrypted DEK: %w", err)
 	}
-	if err := validateKeyID(o.KeyID); err != nil {
+	if _, err := ValidateKeyID(o.KeyID); err != nil {
 		return fmt.Errorf("failed to validate key id: %w", err)
 	}
 	if err := validateAnnotations(o.Annotations); err != nil {
@@ -301,15 +297,22 @@ func validateAnnotations(annotations map[string][]byte) error {
 	return utilerrors.NewAggregate(errs)
 }
 
-// validateKeyID tests the following:
+// ValidateKeyID tests the following:
 // 1. The keyID is not empty.
 // 2. The size of keyID is less than 1 kB.
-func validateKeyID(keyID string) error {
+func ValidateKeyID(keyID string) (ErrCodeKeyID, error) {
 	if len(keyID) == 0 {
-		return fmt.Errorf("keyID is empty")
+		return errKeyIDEmptyCode, fmt.Errorf("keyID is empty")
 	}
-	if len(keyID) > keyIDMaxSize {
-		return fmt.Errorf("keyID is %d bytes, which exceeds the max size of %d", len(keyID), keyIDMaxSize)
+	if len(keyID) > KeyIDMaxSize {
+		return errKeyIDTooLongCode, fmt.Errorf("keyID is %d bytes, which exceeds the max size of %d", len(keyID), KeyIDMaxSize)
 	}
-	return nil
+	return errKeyIDOKCode, nil
+}
+
+func getRequestInfoFromContext(ctx context.Context) *genericapirequest.RequestInfo {
+	if reqInfo, found := genericapirequest.RequestInfoFrom(ctx); found {
+		return reqInfo
+	}
+	return &genericapirequest.RequestInfo{}
 }

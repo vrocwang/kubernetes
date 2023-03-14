@@ -52,9 +52,16 @@ import (
 	"k8s.io/kubernetes/test/integration/framework"
 )
 
+//lint:ignore U1000 we need to alias only for the sake of embedding
 type kubeClientSet = kubernetes.Interface
+
+//lint:ignore U1000 we need to alias only for the sake of embedding
 type aggegatorClientSet = aggregator.Interface
+
+//lint:ignore U1000 we need to alias only for the sake of embedding
 type apiextensionsClientSet = apiextensions.Interface
+
+//lint:ignore U1000 we need to alias only for the sake of embedding
 type dynamicClientset = dynamic.Interface
 type testClientSet struct {
 	kubeClientSet
@@ -192,7 +199,7 @@ func TestAggregatedAPIServiceDiscovery(t *testing.T) {
 	defer cleanup()
 
 	// Create a resource manager whichs serves our GroupVersion
-	resourceManager := discoveryendpoint.NewResourceManager()
+	resourceManager := discoveryendpoint.NewResourceManager("apis")
 	resourceManager.SetGroups([]apidiscoveryv2beta1.APIGroupDiscovery{basicTestGroup})
 
 	// Install our ResourceManager as an Aggregated APIService to the
@@ -688,6 +695,33 @@ func TestGroupPriorty(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestSingularNames(t *testing.T) {
+	server := kubeapiservertesting.StartTestServerOrDie(t, nil, []string{"--runtime-config=api/all=true"}, framework.SharedEtcd())
+	t.Cleanup(server.TearDownFn)
+
+	kubeClientSet, err := kubernetes.NewForConfig(server.ClientConfig)
+	require.NoError(t, err)
+
+	_, resources, err := kubeClientSet.Discovery().ServerGroupsAndResources()
+	require.NoError(t, err)
+
+	for _, rr := range resources {
+		for _, r := range rr.APIResources {
+			if strings.Contains(r.Name, "/") {
+				continue
+			}
+			if r.SingularName == "" {
+				t.Errorf("missing singularName for resource %q in %q", r.Name, rr.GroupVersion)
+				continue
+			}
+			if r.SingularName != strings.ToLower(r.Kind) {
+				t.Errorf("expected singularName for resource %q in %q to be %q, got %q", r.Name, rr.GroupVersion, strings.ToLower(r.Kind), r.SingularName)
+				continue
+			}
+		}
+	}
 }
 
 func makeCRDSpec(group string, kind string, namespaced bool, versions []string, categories ...string) apiextensionsv1.CustomResourceDefinitionSpec {

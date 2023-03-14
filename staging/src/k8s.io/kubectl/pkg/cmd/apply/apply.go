@@ -17,6 +17,7 @@ limitations under the License.
 package apply
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/util/csaupgrade"
+	"k8s.io/component-base/version"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/delete"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
@@ -55,8 +57,6 @@ import (
 // reflect the runtime requirements for the command.  This structure reduces the transformation to wiring and makes
 // the logic itself easy to unit test
 type ApplyFlags struct {
-	Factory cmdutil.Factory
-
 	RecordFlags *genericclioptions.RecordFlags
 	PrintFlags  *genericclioptions.PrintFlags
 
@@ -66,6 +66,7 @@ type ApplyFlags struct {
 	Selector       string
 	Prune          bool
 	PruneResources []prune.Resource
+	ApplySetRef    string
 	All            bool
 	Overwrite      bool
 	OpenAPIPatch   bool
@@ -122,8 +123,8 @@ type ApplyOptions struct {
 
 	// Stores visited objects/namespaces for later use
 	// calculating the set of objects to prune.
-	VisitedUids       sets.String
-	VisitedNamespaces sets.String
+	VisitedUids       sets.Set[types.UID]
+	VisitedNamespaces sets.Set[string]
 
 	// Function run after the objects are generated and
 	// stored in the "objects" field, but before the
@@ -132,6 +133,10 @@ type ApplyOptions struct {
 	// Function run after all objects have been applied.
 	// The standard PostProcessorFn is "PrintAndPrunePostProcessor()".
 	PostProcessorFn func() error
+
+	// ApplySet tracks the set of objects that have been applied, for the purposes of pruning.
+	// See git.k8s.io/enhancements/keps/sig-cli/3659-kubectl-apply-prune
+	ApplySet *ApplySet
 }
 
 var (
@@ -171,10 +176,11 @@ var (
 	warningMigrationReapplyFailed        = "Warning: failed to re-apply configuration after performing Server-Side Apply migration. This is non-fatal and will be retried next time you apply. Error: %[1]s\n"
 )
 
+var ApplySetToolVersion = version.Get().GitVersion
+
 // NewApplyFlags returns a default ApplyFlags
-func NewApplyFlags(f cmdutil.Factory, streams genericclioptions.IOStreams) *ApplyFlags {
+func NewApplyFlags(streams genericclioptions.IOStreams) *ApplyFlags {
 	return &ApplyFlags{
-		Factory:     f,
 		RecordFlags: genericclioptions.NewRecordFlags(),
 		DeleteFlags: delete.NewDeleteFlags("The files that contain the configurations to apply."),
 		PrintFlags:  genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
@@ -188,7 +194,7 @@ func NewApplyFlags(f cmdutil.Factory, streams genericclioptions.IOStreams) *Appl
 
 // NewCmdApply creates the `apply` command
 func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
-	flags := NewApplyFlags(f, ioStreams)
+	flags := NewApplyFlags(ioStreams)
 
 	cmd := &cobra.Command{
 		Use:                   "apply (-f FILENAME | -k DIRECTORY)",
@@ -197,7 +203,7 @@ func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions
 		Long:                  applyLong,
 		Example:               applyExample,
 		Run: func(cmd *cobra.Command, args []string) {
-			o, err := flags.ToOptions(cmd, baseName, args)
+			o, err := flags.ToOptions(f, cmd, baseName, args)
 			cmdutil.CheckErr(err)
 			cmdutil.CheckErr(o.Validate())
 			cmdutil.CheckErr(o.Run())
@@ -207,9 +213,9 @@ func NewCmdApply(baseName string, f cmdutil.Factory, ioStreams genericclioptions
 	flags.AddFlags(cmd)
 
 	// apply subcommands
-	cmd.AddCommand(NewCmdApplyViewLastApplied(flags.Factory, flags.IOStreams))
-	cmd.AddCommand(NewCmdApplySetLastApplied(flags.Factory, flags.IOStreams))
-	cmd.AddCommand(NewCmdApplyEditLastApplied(flags.Factory, flags.IOStreams))
+	cmd.AddCommand(NewCmdApplyViewLastApplied(f, flags.IOStreams))
+	cmd.AddCommand(NewCmdApplySetLastApplied(f, flags.IOStreams))
+	cmd.AddCommand(NewCmdApplyEditLastApplied(f, flags.IOStreams))
 
 	return cmd
 }
@@ -226,18 +232,14 @@ func (flags *ApplyFlags) AddFlags(cmd *cobra.Command) {
 	cmdutil.AddServerSideApplyFlags(cmd)
 	cmdutil.AddFieldManagerFlagVar(cmd, &flags.FieldManager, FieldManagerClientSideApply)
 	cmdutil.AddLabelSelectorFlagVar(cmd, &flags.Selector)
+	cmdutil.AddPruningFlags(cmd, &flags.Prune, &flags.PruneAllowlist, &flags.PruneWhitelist, &flags.All, &flags.ApplySetRef)
 
 	cmd.Flags().BoolVar(&flags.Overwrite, "overwrite", flags.Overwrite, "Automatically resolve conflicts between the modified and live configuration by using values from the modified configuration")
-	cmd.Flags().BoolVar(&flags.Prune, "prune", flags.Prune, "Automatically delete resource objects, that do not appear in the configs and are created by either apply or create --save-config. Should be used with either -l or --all.")
-	cmd.Flags().BoolVar(&flags.All, "all", flags.All, "Select all resources in the namespace of the specified resource types.")
-	cmd.Flags().StringArrayVar(&flags.PruneAllowlist, "prune-allowlist", flags.PruneAllowlist, "Overwrite the default allowlist with <group/version/kind> for --prune")
-	cmd.Flags().StringArrayVar(&flags.PruneWhitelist, "prune-whitelist", flags.PruneWhitelist, "Overwrite the default whitelist with <group/version/kind> for --prune") // TODO: Remove this in kubectl 1.28 or later
-	cmd.Flags().MarkDeprecated("prune-whitelist", "Use --prune-allowlist instead.")
 	cmd.Flags().BoolVar(&flags.OpenAPIPatch, "openapi-patch", flags.OpenAPIPatch, "If true, use openapi to calculate diff when the openapi presents and the resource can be found in the openapi spec. Otherwise, fall back to use baked-in types.")
 }
 
 // ToOptions converts from CLI inputs to runtime inputs
-func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []string) (*ApplyOptions, error) {
+func (flags *ApplyFlags) ToOptions(f cmdutil.Factory, cmd *cobra.Command, baseName string, args []string) (*ApplyOptions, error) {
 	if len(args) != 0 {
 		return nil, cmdutil.UsageErrorf(cmd, "Unexpected args: %v", args)
 	}
@@ -249,7 +251,7 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
-	dynamicClient, err := flags.Factory.DynamicClient()
+	dynamicClient, err := f.DynamicClient()
 	if err != nil {
 		return nil, err
 	}
@@ -279,27 +281,46 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
-	openAPISchema, _ := flags.Factory.OpenAPISchema()
+	openAPISchema, _ := f.OpenAPISchema()
 
 	validationDirective, err := cmdutil.GetValidationDirective(cmd)
 	if err != nil {
 		return nil, err
 	}
-	validator, err := flags.Factory.Validator(validationDirective)
+	validator, err := f.Validator(validationDirective)
 	if err != nil {
 		return nil, err
 	}
-	builder := flags.Factory.NewBuilder()
-	mapper, err := flags.Factory.ToRESTMapper()
-	if err != nil {
-		return nil, err
-	}
-
-	namespace, enforceNamespace, err := flags.Factory.ToRawKubeConfigLoader().Namespace()
+	builder := f.NewBuilder()
+	mapper, err := f.ToRESTMapper()
 	if err != nil {
 		return nil, err
 	}
 
+	namespace, enforceNamespace, err := f.ToRawKubeConfigLoader().Namespace()
+	if err != nil {
+		return nil, err
+	}
+
+	var applySet *ApplySet
+	if flags.ApplySetRef != "" {
+		parent, err := ParseApplySetParentRef(flags.ApplySetRef, mapper)
+		if err != nil {
+			return nil, fmt.Errorf("invalid parent reference %q: %w", flags.ApplySetRef, err)
+		}
+		// ApplySet uses the namespace value from the flag, but not from the kubeconfig or defaults
+		// This means the namespace flag is required when using a namespaced parent.
+		if enforceNamespace && parent.IsNamespaced() {
+			parent.Namespace = namespace
+		}
+		// TODO: is version.Get() the right thing? Does it work for non-kubectl package consumers?
+		tooling := ApplySetTooling{name: baseName, version: ApplySetToolVersion}
+		restClient, err := f.ClientForMapping(parent.RESTMapping)
+		if err != nil || restClient == nil {
+			return nil, fmt.Errorf("failed to initialize RESTClient for ApplySet: %w", err)
+		}
+		applySet = NewApplySet(parent, tooling, mapper, restClient)
+	}
 	if flags.Prune {
 		pruneAllowlist := slice.ToSet(flags.PruneAllowlist, flags.PruneWhitelist)
 		flags.PruneResources, err = prune.ParseResources(mapper, pruneAllowlist)
@@ -343,8 +364,10 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		objects:       []*resource.Info{},
 		objectsCached: false,
 
-		VisitedUids:       sets.NewString(),
-		VisitedNamespaces: sets.NewString(),
+		VisitedUids:       sets.New[types.UID](),
+		VisitedNamespaces: sets.New[string](),
+
+		ApplySet: applySet,
 	}
 
 	o.PostProcessorFn = o.PrintAndPrunePostProcessor()
@@ -374,14 +397,39 @@ func (o *ApplyOptions) Validate() error {
 		return fmt.Errorf("cannot set --all and --selector at the same time")
 	}
 
-	if o.Prune && !o.All && o.Selector == "" {
-		return fmt.Errorf("all resources selected for prune without explicitly passing --all. To prune all resources, pass the --all flag. If you did not mean to prune all resources, specify a label selector")
+	if o.ApplySet != nil {
+		if !o.Prune {
+			return fmt.Errorf("--applyset requires --prune")
+		}
+		if err := o.ApplySet.Validate(); err != nil {
+			return err
+		}
 	}
+	if o.Prune {
+		// Do not force the recreation of an object(s) if we're pruning; this can cause
+		// undefined behavior since object UID's change.
+		if o.DeleteOptions.ForceDeletion {
+			return fmt.Errorf("--force cannot be used with --prune")
+		}
 
-	// Do not force the recreation of an object(s) if we're pruning; this can cause
-	// undefined behavior since object UID's change.
-	if o.Prune && o.DeleteOptions.ForceDeletion {
-		return fmt.Errorf("--force cannot be used with --prune")
+		if o.ApplySet != nil {
+			if o.All {
+				return fmt.Errorf("--all is incompatible with --applyset")
+			} else if o.Selector != "" {
+				return fmt.Errorf("--selector is incompatible with --applyset")
+			} else if len(o.PruneResources) > 0 {
+				return fmt.Errorf("--prune-allowlist is incompatible with --applyset")
+			} else {
+				klog.Warning("WARNING: --prune --applyset is not fully implemented and does not yet prune any resources.")
+			}
+		} else {
+			if !o.All && o.Selector == "" {
+				return fmt.Errorf("all resources selected for prune without explicitly passing --all. To prune all resources, pass the --all flag. If you did not mean to prune all resources, specify a label selector")
+			}
+			if o.ServerSideApply {
+				return fmt.Errorf("--prune is in alpha and doesn't currently work on objects created by server-side apply")
+			}
+		}
 	}
 
 	return nil
@@ -415,7 +463,15 @@ func (o *ApplyOptions) GetObjects() ([]*resource.Info, error) {
 			LabelSelectorParam(o.Selector).
 			Flatten().
 			Do()
+
 		o.objects, err = r.Infos()
+
+		if o.ApplySet != nil {
+			if err := o.ApplySet.addLabels(o.objects); err != nil {
+				return nil, err
+			}
+		}
+
 		o.objectsCached = true
 	}
 	return o.objects, err
@@ -451,6 +507,24 @@ func (o *ApplyOptions) Run() error {
 	}
 	if len(infos) == 0 && len(errs) == 0 {
 		return fmt.Errorf("no objects passed to apply")
+	}
+
+	if o.ApplySet != nil {
+		if err := o.ApplySet.FetchParent(); err != nil {
+			return err
+		}
+		// Update the live parent object to the superset of the current and previous resources.
+		// Doing this before the actual apply and prune operations improves behavior by ensuring
+		// the live object contains the superset on failure. This may cause the next pruning
+		// operation to make a larger number of GET requests than strictly necessary, but it prevents
+		// object leakage from the set. The superset will automatically be reduced to the correct
+		// set by the next successful operation.
+		for _, info := range infos {
+			o.ApplySet.AddResource(info.ResourceMapping(), info.Namespace)
+		}
+		if err := o.ApplySet.UpdateParent(UpdateToSuperset, o.DryRunStrategy, o.ValidationDirective); err != nil {
+			return err
+		}
 	}
 	// Iterate through all objects, applying each one.
 	for _, info := range infos {
@@ -936,7 +1010,8 @@ func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 	if err != nil {
 		return err
 	}
-	o.VisitedUids.Insert(string(metadata.GetUID()))
+	o.VisitedUids.Insert(metadata.GetUID())
+
 	return nil
 }
 
@@ -948,13 +1023,30 @@ func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 func (o *ApplyOptions) PrintAndPrunePostProcessor() func() error {
 
 	return func() error {
+		ctx := context.TODO()
 		if err := o.printObjects(); err != nil {
 			return err
 		}
 
 		if o.Prune {
-			p := newPruner(o)
-			return p.pruneAll(o)
+			if cmdutil.ApplySet.IsEnabled() && o.ApplySet != nil {
+				pruner, err := newApplySetPruner(o)
+				if err != nil {
+					return err
+				}
+				if err := pruner.pruneAll(ctx, o.ApplySet); err != nil {
+					// Do not update the ApplySet. If pruning failed, we want to keep the superset
+					// of the previous and current resources in the ApplySet, so that the pruning
+					// step of the next apply will be able to clean up the set correctly.
+					return err
+				}
+				if err := o.ApplySet.UpdateParent(UpdateToLatestSet, o.DryRunStrategy, o.ValidationDirective); err != nil {
+					return fmt.Errorf("apply and prune succeeded, but ApplySet update failed: %w", err)
+				}
+			} else {
+				p := newPruner(o)
+				return p.pruneAll(o)
+			}
 		}
 
 		return nil

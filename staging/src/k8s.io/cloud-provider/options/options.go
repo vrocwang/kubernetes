@@ -57,13 +57,13 @@ type CloudControllerManagerOptions struct {
 	Generic           *cmoptions.GenericControllerManagerConfigurationOptions
 	KubeCloudShared   *KubeCloudSharedOptions
 	ServiceController *ServiceControllerOptions
+	NodeController    *NodeControllerOptions
 
 	SecureServing  *apiserveroptions.SecureServingOptionsWithLoopback
 	Authentication *apiserveroptions.DelegatingAuthenticationOptions
 	Authorization  *apiserveroptions.DelegatingAuthorizationOptions
 
-	Master     string
-	Kubeconfig string
+	Master string
 
 	// NodeStatusUpdateFrequency is the frequency at which the controller updates nodes' status
 	NodeStatusUpdateFrequency metav1.Duration
@@ -79,6 +79,9 @@ func NewCloudControllerManagerOptions() (*CloudControllerManagerOptions, error) 
 	s := CloudControllerManagerOptions{
 		Generic:         cmoptions.NewGenericControllerManagerConfigurationOptions(&componentConfig.Generic),
 		KubeCloudShared: NewKubeCloudSharedOptions(&componentConfig.KubeCloudShared),
+		NodeController: &NodeControllerOptions{
+			NodeControllerConfiguration: &componentConfig.NodeController,
+		},
 		ServiceController: &ServiceControllerOptions{
 			ServiceControllerConfiguration: &componentConfig.ServiceController,
 		},
@@ -111,6 +114,7 @@ func NewDefaultComponentConfig() (*ccmconfig.CloudControllerManagerConfiguration
 	if err := ccmconfigscheme.Scheme.Convert(versioned, internal, nil); err != nil {
 		return nil, err
 	}
+
 	return internal, nil
 }
 
@@ -119,6 +123,7 @@ func (o *CloudControllerManagerOptions) Flags(allControllers, disabledByDefaultC
 	fss := cliflag.NamedFlagSets{}
 	o.Generic.AddFlags(&fss, allControllers, disabledByDefaultControllers)
 	o.KubeCloudShared.AddFlags(fss.FlagSet("generic"))
+	o.NodeController.AddFlags(fss.FlagSet("node controller"))
 	o.ServiceController.AddFlags(fss.FlagSet("service controller"))
 
 	o.SecureServing.AddFlags(fss.FlagSet("secure serving"))
@@ -127,7 +132,7 @@ func (o *CloudControllerManagerOptions) Flags(allControllers, disabledByDefaultC
 
 	fs := fss.FlagSet("misc")
 	fs.StringVar(&o.Master, "master", o.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig).")
-	fs.StringVar(&o.Kubeconfig, "kubeconfig", o.Kubeconfig, "Path to kubeconfig file with authorization and master location information.")
+	fs.StringVar(&o.Generic.ClientConnection.Kubeconfig, "kubeconfig", o.Generic.ClientConnection.Kubeconfig, "Path to kubeconfig file with authorization and master location information (the master location can be overridden by the master flag).")
 	fs.DurationVar(&o.NodeStatusUpdateFrequency.Duration, "node-status-update-frequency", o.NodeStatusUpdateFrequency.Duration, "Specifies how often the controller updates nodes' status.")
 
 	utilfeature.DefaultMutableFeatureGate.AddFlag(fss.FlagSet("generic"))
@@ -142,7 +147,7 @@ func (o *CloudControllerManagerOptions) ApplyTo(c *config.Config, userAgent stri
 	// Build kubeconfig first to so that if it fails, it doesn't cause leaking
 	// goroutines (started from initializing secure serving - which underneath
 	// creates a queue which in its constructor starts a goroutine).
-	c.Kubeconfig, err = clientcmd.BuildConfigFromFlags(o.Master, o.Kubeconfig)
+	c.Kubeconfig, err = clientcmd.BuildConfigFromFlags(o.Master, o.Generic.ClientConnection.Kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -198,6 +203,7 @@ func (o *CloudControllerManagerOptions) ApplyTo(c *config.Config, userAgent stri
 	// sync back to component config
 	// TODO: find more elegant way than syncing back the values.
 	c.ComponentConfig.NodeStatusUpdateFrequency = o.NodeStatusUpdateFrequency
+	c.ComponentConfig.NodeController.ConcurrentNodeSyncs = o.NodeController.ConcurrentNodeSyncs
 
 	return nil
 }

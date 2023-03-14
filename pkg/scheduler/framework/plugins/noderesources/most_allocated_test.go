@@ -154,7 +154,7 @@ func TestMostAllocatedScoringStrategy(t *testing.T) {
 			// Node1 Score: (100 + 90) / 2 = 95
 			// Node2 scores on 0-MaxNodeScore scale
 			// CPU Score: (5000 * MaxNodeScore) / 10000 = 50
-			// Memory Score: 8000 *MaxNodeScore / 8000 return 100
+			// Memory Score: 9000 * MaxNodeScore / 9000 return 100
 			// Node2 Score: (50 + 100) / 2 = 75
 			name: "resources requested equal node capacity",
 			requestedPod: st.MakePod().
@@ -317,6 +317,27 @@ func TestMostAllocatedScoringStrategy(t *testing.T) {
 			existingPods:   nil,
 			expectedScores: []framework.NodeScore{{Name: "node1", Score: 50}, {Name: "node2", Score: 40}},
 		},
+		{
+			// If the node doesn't have a resource
+			// CPU Score: (3000 * 100) / 6000 = 50
+			// Memory Score: (4000 * 100) / 10000 = 40
+			// Node1 Score: (50 * 1 + 40 * 1) / (1 + 1) = 45
+			// Node2 Score: (50 * 1 + 40 * 1) / (1 + 1) = 45
+			name: "if the node doesn't have a resource",
+			requestedPod: st.MakePod().Node("node1").
+				Req(map[v1.ResourceName]string{"cpu": "3000", "memory": "4000"}).
+				Obj(),
+			nodes: []*v1.Node{
+				st.MakeNode().Name("node1").Capacity(map[v1.ResourceName]string{"cpu": "6000", "memory": "10000"}).Obj(),
+				st.MakeNode().Name("node2").Capacity(map[v1.ResourceName]string{"cpu": "6000", "memory": "10000", v1.ResourceName(extendedRes): "4"}).Obj(),
+			},
+			expectedScores: []framework.NodeScore{{Name: "node1", Score: 45}, {Name: "node2", Score: 45}},
+			resources: []config.ResourceSpec{
+				{Name: extendedRes, Weight: 2},
+				{Name: string(v1.ResourceCPU), Weight: 1},
+				{Name: string(v1.ResourceMemory), Weight: 1},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -341,6 +362,11 @@ func TestMostAllocatedScoringStrategy(t *testing.T) {
 			}
 			if err != nil {
 				return
+			}
+
+			status := p.(framework.PreScorePlugin).PreScore(ctx, state, test.requestedPod, test.nodes)
+			if !status.IsSuccess() {
+				t.Errorf("PreScore is expected to return success, but didn't. Got status: %v", status)
 			}
 
 			var gotScores framework.NodeScoreList

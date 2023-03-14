@@ -21,21 +21,37 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/storage/value"
 	aestransformer "k8s.io/apiserver/pkg/storage/value/encrypt/aes"
 	kmstypes "k8s.io/apiserver/pkg/storage/value/encrypt/envelope/kmsv2/v2alpha1"
+	"k8s.io/apiserver/pkg/storage/value/encrypt/envelope/metrics"
+	"k8s.io/component-base/metrics/legacyregistry"
+	"k8s.io/component-base/metrics/testutil"
+	"k8s.io/klog/v2"
+	kmsservice "k8s.io/kms/pkg/service"
+	testingclock "k8s.io/utils/clock/testing"
 )
 
 const (
-	testText              = "abcdefghijklmnopqrstuvwxyz"
-	testContextText       = "0123456789"
-	testEnvelopeCacheSize = 10
+	testText        = "abcdefghijklmnopqrstuvwxyz"
+	testContextText = "0123456789"
+	testKeyHash     = "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+	testKeyVersion  = "1"
+	testCacheTTL    = 10 * time.Second
+)
+
+var (
+	errCode = "empty"
 )
 
 // testEnvelopeService is a mock Envelope service which can be used to simulate remote Envelope services
@@ -46,7 +62,7 @@ type testEnvelopeService struct {
 	keyVersion  string
 }
 
-func (t *testEnvelopeService) Decrypt(ctx context.Context, uid string, req *DecryptRequest) ([]byte, error) {
+func (t *testEnvelopeService) Decrypt(ctx context.Context, uid string, req *kmsservice.DecryptRequest) ([]byte, error) {
 	if t.disabled {
 		return nil, fmt.Errorf("Envelope service was disabled")
 	}
@@ -59,7 +75,7 @@ func (t *testEnvelopeService) Decrypt(ctx context.Context, uid string, req *Decr
 	return base64.StdEncoding.DecodeString(string(req.Ciphertext))
 }
 
-func (t *testEnvelopeService) Encrypt(ctx context.Context, uid string, data []byte) (*EncryptResponse, error) {
+func (t *testEnvelopeService) Encrypt(ctx context.Context, uid string, data []byte) (*kmsservice.EncryptResponse, error) {
 	if t.disabled {
 		return nil, fmt.Errorf("Envelope service was disabled")
 	}
@@ -74,14 +90,14 @@ func (t *testEnvelopeService) Encrypt(ctx context.Context, uid string, data []by
 	} else {
 		annotations["local-kek.kms.kubernetes.io"] = []byte("encrypted-local-kek")
 	}
-	return &EncryptResponse{Ciphertext: []byte(base64.StdEncoding.EncodeToString(data)), KeyID: t.keyVersion, Annotations: annotations}, nil
+	return &kmsservice.EncryptResponse{Ciphertext: []byte(base64.StdEncoding.EncodeToString(data)), KeyID: t.keyVersion, Annotations: annotations}, nil
 }
 
-func (t *testEnvelopeService) Status(ctx context.Context) (*StatusResponse, error) {
+func (t *testEnvelopeService) Status(ctx context.Context) (*kmsservice.StatusResponse, error) {
 	if t.disabled {
 		return nil, fmt.Errorf("Envelope service was disabled")
 	}
-	return &StatusResponse{KeyID: t.keyVersion}, nil
+	return &kmsservice.StatusResponse{KeyID: t.keyVersion}, nil
 }
 
 func (t *testEnvelopeService) SetDisabledStatus(status bool) {
@@ -99,7 +115,7 @@ func (t *testEnvelopeService) Rotate() {
 
 func newTestEnvelopeService() *testEnvelopeService {
 	return &testEnvelopeService{
-		keyVersion: "1",
+		keyVersion: testKeyVersion,
 	}
 }
 
@@ -107,33 +123,37 @@ func newTestEnvelopeService() *testEnvelopeService {
 func TestEnvelopeCaching(t *testing.T) {
 	testCases := []struct {
 		desc                     string
-		cacheSize                int
+		cacheTTL                 time.Duration
 		simulateKMSPluginFailure bool
 		expectedError            string
 	}{
 		{
-			desc:                     "positive cache size should withstand plugin failure",
-			cacheSize:                1000,
+			desc:                     "entry in cache should withstand plugin failure",
+			cacheTTL:                 5 * time.Minute,
 			simulateKMSPluginFailure: true,
 		},
 		{
-			desc:                     "cache disabled size should not withstand plugin failure",
-			cacheSize:                0,
+			desc:                     "cache entry expired should not withstand plugin failure",
+			cacheTTL:                 1 * time.Millisecond,
 			simulateKMSPluginFailure: true,
 			expectedError:            "failed to decrypt DEK, error: Envelope service was disabled",
-		},
-		{
-			desc:                     "cache disabled, no plugin failure should succeed",
-			cacheSize:                0,
-			simulateKMSPluginFailure: false,
 		},
 	}
 
 	for _, tt := range testCases {
 		t.Run(tt.desc, func(t *testing.T) {
 			envelopeService := newTestEnvelopeService()
-			envelopeTransformer := NewEnvelopeTransformer(envelopeService, tt.cacheSize, aestransformer.NewGCMTransformer)
-			ctx := context.Background()
+			fakeClock := testingclock.NewFakeClock(time.Now())
+			envelopeTransformer := newEnvelopeTransformerWithClock(envelopeService, testProviderName,
+				func(ctx context.Context) (string, error) {
+					return "", nil
+				},
+				func(ctx context.Context) error {
+					return nil
+				},
+				aestransformer.NewGCMTransformer, tt.cacheTTL, fakeClock)
+
+			ctx := testContext(t)
 			dataCtx := value.DefaultContext([]byte(testContextText))
 			originalText := []byte(testText)
 
@@ -150,6 +170,8 @@ func TestEnvelopeCaching(t *testing.T) {
 			}
 
 			envelopeService.SetDisabledStatus(tt.simulateKMSPluginFailure)
+			fakeClock.Step(2 * time.Minute)
+			// Subsequent read for the same data should work fine due to caching.
 			untransformedData, _, err = envelopeTransformer.TransformFromStorage(ctx, transformedData, dataCtx)
 			if tt.expectedError != "" {
 				if err == nil {
@@ -170,37 +192,75 @@ func TestEnvelopeCaching(t *testing.T) {
 	}
 }
 
-// Makes Envelope transformer hit cache limit, throws error if it misbehaves.
-func TestEnvelopeCacheLimit(t *testing.T) {
-	envelopeTransformer := NewEnvelopeTransformer(newTestEnvelopeService(), testEnvelopeCacheSize, aestransformer.NewGCMTransformer)
-	ctx := context.Background()
-	dataCtx := value.DefaultContext([]byte(testContextText))
-
-	transformedOutputs := map[int][]byte{}
-
-	// Overwrite lots of entries in the map
-	for i := 0; i < 2*testEnvelopeCacheSize; i++ {
-		numberText := []byte(strconv.Itoa(i))
-
-		res, err := envelopeTransformer.TransformToStorage(ctx, numberText, dataCtx)
-		transformedOutputs[i] = res
-		if err != nil {
-			t.Fatalf("envelopeTransformer: error while transforming data (%v) to storage: %s", numberText, err)
-		}
+// Test keyIDGetter as part of envelopeTransformer, throws error if returned err or staleness is incorrect.
+func TestEnvelopeTransformerKeyIDGetter(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		desc          string
+		expectedStale bool
+		testErr       error
+		testKeyID     string
+	}{
+		{
+			desc:          "keyIDGetter returns err",
+			expectedStale: false,
+			testErr:       fmt.Errorf("failed to perform status section of the healthz check for KMS Provider"),
+			testKeyID:     "",
+		},
+		{
+			desc:          "keyIDGetter returns same keyID",
+			expectedStale: false,
+			testErr:       nil,
+			testKeyID:     testKeyVersion,
+		},
+		{
+			desc:          "keyIDGetter returns different keyID",
+			expectedStale: true,
+			testErr:       nil,
+			testKeyID:     "2",
+		},
 	}
 
-	// Try reading all the data now, ensuring cache misses don't cause a concern.
-	for i := 0; i < 2*testEnvelopeCacheSize; i++ {
-		numberText := []byte(strconv.Itoa(i))
+	for _, tt := range testCases {
+		tt := tt
+		t.Run(tt.desc, func(t *testing.T) {
+			t.Parallel()
+			envelopeService := newTestEnvelopeService()
+			envelopeTransformer := NewEnvelopeTransformer(envelopeService, testProviderName,
+				func(ctx context.Context) (string, error) {
+					return tt.testKeyID, tt.testErr
+				},
+				func(ctx context.Context) error {
+					return nil
+				},
+				aestransformer.NewGCMTransformer)
 
-		output, _, err := envelopeTransformer.TransformFromStorage(ctx, transformedOutputs[i], dataCtx)
-		if err != nil {
-			t.Fatalf("envelopeTransformer: error while transforming data (%v) from storage: %s", transformedOutputs[i], err)
-		}
+			ctx := testContext(t)
+			dataCtx := value.DefaultContext([]byte(testContextText))
+			originalText := []byte(testText)
 
-		if !bytes.Equal(numberText, output) {
-			t.Fatalf("envelopeTransformer transformed data incorrectly using cache. Expected: %v, got %v", numberText, output)
-		}
+			transformedData, err := envelopeTransformer.TransformToStorage(ctx, originalText, dataCtx)
+			if err != nil {
+				t.Fatalf("envelopeTransformer: error while transforming data (%v) to storage: %s", originalText, err)
+			}
+
+			_, stale, err := envelopeTransformer.TransformFromStorage(ctx, transformedData, dataCtx)
+			if tt.testErr != nil {
+				if err == nil {
+					t.Fatalf("envelopeTransformer: expected error: %v, got nil", tt.testErr)
+				}
+				if err.Error() != tt.testErr.Error() {
+					t.Fatalf("envelopeTransformer: expected error: %v, got: %v", tt.testErr, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("envelopeTransformer: unexpected error: %v", err)
+				}
+				if stale != tt.expectedStale {
+					t.Fatalf("envelopeTransformer TransformFromStorage determined keyID staleness incorrectly, expected: %v, got %v", tt.expectedStale, stale)
+				}
+			}
+		})
 	}
 }
 
@@ -237,8 +297,15 @@ func TestTransformToStorageError(t *testing.T) {
 			t.Parallel()
 			envelopeService := newTestEnvelopeService()
 			envelopeService.SetAnnotations(tt.annotations)
-			envelopeTransformer := NewEnvelopeTransformer(envelopeService, 0, aestransformer.NewGCMTransformer)
-			ctx := context.Background()
+			envelopeTransformer := NewEnvelopeTransformer(envelopeService, testProviderName,
+				func(ctx context.Context) (string, error) {
+					return "", nil
+				},
+				func(ctx context.Context) error {
+					return nil
+				},
+				aestransformer.NewGCMTransformer)
+			ctx := testContext(t)
 			dataCtx := value.DefaultContext([]byte(testContextText))
 
 			_, err := envelopeTransformer.TransformToStorage(ctx, []byte(testText), dataCtx)
@@ -337,6 +404,7 @@ func TestValidateAnnotations(t *testing.T) {
 	}
 	t.Run("success", func(t *testing.T) {
 		for i := range successCases {
+			i := i
 			t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 				t.Parallel()
 				if err := validateAnnotations(successCases[i]); err != nil {
@@ -374,6 +442,7 @@ func TestValidateAnnotations(t *testing.T) {
 
 	t.Run("name error", func(t *testing.T) {
 		for i := range annotationsNameErrorCases {
+			i := i
 			t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 				t.Parallel()
 				err := validateAnnotations(annotationsNameErrorCases[i].annotations)
@@ -401,6 +470,7 @@ func TestValidateAnnotations(t *testing.T) {
 	}
 	t.Run("size error", func(t *testing.T) {
 		for i := range annotationsSizeErrorCases {
+			i := i
 			t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 				t.Parallel()
 				err := validateAnnotations(annotationsSizeErrorCases[i].annotations)
@@ -419,24 +489,28 @@ func TestValidateAnnotations(t *testing.T) {
 func TestValidateKeyID(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
-		name          string
-		keyID         string
-		expectedError string
+		name              string
+		keyID             string
+		expectedError     string
+		expectedErrorCode string
 	}{
 		{
-			name:          "valid key ID",
-			keyID:         "1234",
-			expectedError: "",
+			name:              "valid key ID",
+			keyID:             "1234",
+			expectedError:     "",
+			expectedErrorCode: "ok",
 		},
 		{
-			name:          "empty key ID",
-			keyID:         "",
-			expectedError: "keyID is empty",
+			name:              "empty key ID",
+			keyID:             "",
+			expectedError:     "keyID is empty",
+			expectedErrorCode: "empty",
 		},
 		{
-			name:          "keyID size is greater than 1 kB",
-			keyID:         strings.Repeat("a", 1024+1),
-			expectedError: "which exceeds the max size of",
+			name:              "keyID size is greater than 1 kB",
+			keyID:             strings.Repeat("a", 1024+1),
+			expectedError:     "which exceeds the max size of",
+			expectedErrorCode: "too_long",
 		},
 	}
 
@@ -444,7 +518,7 @@ func TestValidateKeyID(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateKeyID(tt.keyID)
+			errCode, err := ValidateKeyID(tt.keyID)
 			if tt.expectedError != "" {
 				if err == nil {
 					t.Fatalf("expected error %q, got nil", tt.expectedError)
@@ -456,6 +530,9 @@ func TestValidateKeyID(t *testing.T) {
 				if err != nil {
 					t.Fatalf("expected no error, got %q", err)
 				}
+			}
+			if tt.expectedErrorCode != string(errCode) {
+				t.Fatalf("expected %s errCode, got %s", tt.expectedErrorCode, string(errCode))
 			}
 		})
 	}
@@ -505,6 +582,172 @@ func TestValidateEncryptedDEK(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Fatalf("expected no error, got %q", err)
+				}
+			}
+		})
+	}
+}
+
+func TestEnvelopeMetrics(t *testing.T) {
+	envelopeService := newTestEnvelopeService()
+	envelopeTransformer := NewEnvelopeTransformer(envelopeService, testProviderName,
+		func(ctx context.Context) (string, error) {
+			return testKeyVersion, nil
+		},
+		// health probe check to ensure keyID freshness
+		func(ctx context.Context) error {
+			metrics.RecordInvalidKeyIDFromStatus(testProviderName, errCode)
+			return nil
+		},
+		aestransformer.NewGCMTransformer)
+
+	dataCtx := value.DefaultContext([]byte(testContextText))
+
+	kmsv2Transformer := value.PrefixTransformer{Prefix: []byte("k8s:enc:kms:v2:"), Transformer: envelopeTransformer}
+
+	testCases := []struct {
+		desc                  string
+		keyVersionFromEncrypt string
+		prefix                value.Transformer
+		metrics               []string
+		want                  string
+	}{
+		{
+			desc:                  "keyIDHash total",
+			keyVersionFromEncrypt: testKeyVersion,
+			prefix:                value.NewPrefixTransformers(nil, kmsv2Transformer),
+			metrics: []string{
+				"apiserver_envelope_encryption_key_id_hash_total",
+			},
+			want: fmt.Sprintf(`
+				# HELP apiserver_envelope_encryption_key_id_hash_total [ALPHA] Number of times a keyID is used split by transformation type and provider.
+				# TYPE apiserver_envelope_encryption_key_id_hash_total counter
+				apiserver_envelope_encryption_key_id_hash_total{key_id_hash="%s",provider_name="%s",transformation_type="%s"} 1
+        		apiserver_envelope_encryption_key_id_hash_total{key_id_hash="%s",provider_name="%s",transformation_type="%s"} 1
+				`, testKeyHash, testProviderName, metrics.FromStorageLabel, testKeyHash, testProviderName, metrics.ToStorageLabel),
+		},
+		{
+			// keyVersionFromEncrypt is returned from kms v2 envelope service
+			// when it is different from the key ID returned from last status call
+			// it will trigger health probe check immediately to ensure keyID freshness
+			// during probe check above, it will call RecordInvalidKeyIDFromStatus
+			desc:                  "invalid KeyID From Status Total",
+			keyVersionFromEncrypt: "2",
+			prefix:                value.NewPrefixTransformers(nil, kmsv2Transformer),
+			metrics: []string{
+				"apiserver_envelope_encryption_invalid_key_id_from_status_total",
+			},
+			want: fmt.Sprintf(`
+			# HELP apiserver_envelope_encryption_invalid_key_id_from_status_total [ALPHA] Number of times an invalid keyID is returned by the Status RPC call split by error.
+			# TYPE apiserver_envelope_encryption_invalid_key_id_from_status_total counter
+			apiserver_envelope_encryption_invalid_key_id_from_status_total{error="%s",provider_name="%s"} 1
+			`, errCode, testProviderName),
+		},
+	}
+
+	metrics.KeyIDHashTotal.Reset()
+	metrics.InvalidKeyIDFromStatusTotal.Reset()
+
+	for _, tt := range testCases {
+		t.Run(tt.desc, func(t *testing.T) {
+			defer metrics.KeyIDHashTotal.Reset()
+			defer metrics.InvalidKeyIDFromStatusTotal.Reset()
+			ctx := testContext(t)
+			envelopeService.keyVersion = tt.keyVersionFromEncrypt
+			transformedData, err := tt.prefix.TransformToStorage(ctx, []byte(testText), dataCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.prefix.TransformFromStorage(ctx, transformedData, dataCtx)
+
+			if err := testutil.GatherAndCompare(legacyregistry.DefaultGatherer, strings.NewReader(tt.want), tt.metrics...); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestEnvelopeLogging(t *testing.T) {
+	klog.InitFlags(nil)
+	flag.Set("v", "6")
+	flag.Parse()
+
+	testCases := []struct {
+		desc     string
+		ctx      context.Context
+		wantLogs []string
+	}{
+		{
+			desc: "no request info in context",
+			ctx:  testContext(t),
+			wantLogs: []string{
+				`"encrypting content using envelope service" uid="UID" key="0123456789" group="" version="" resource="" subresource="" verb="" namespace="" name=""`,
+				`"decrypting content using envelope service" uid="UID" key="0123456789" group="" version="" resource="" subresource="" verb="" namespace="" name=""`,
+			},
+		},
+		{
+			desc: "request info in context",
+			ctx: genericapirequest.WithRequestInfo(testContext(t), &genericapirequest.RequestInfo{
+				APIGroup:    "awesome.bears.com",
+				APIVersion:  "v1",
+				Resource:    "pandas",
+				Subresource: "status",
+				Namespace:   "kube-system",
+				Name:        "panda",
+				Verb:        "update",
+			}),
+			wantLogs: []string{
+				`"encrypting content using envelope service" uid="UID" key="0123456789" group="awesome.bears.com" version="v1" resource="pandas" subresource="status" verb="update" namespace="kube-system" name="panda"`,
+				`"decrypting content using envelope service" uid="UID" key="0123456789" group="awesome.bears.com" version="v1" resource="pandas" subresource="status" verb="update" namespace="kube-system" name="panda"`,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.desc, func(t *testing.T) {
+			var buf bytes.Buffer
+			klog.SetOutput(&buf)
+			klog.LogToStderr(false)
+			defer klog.LogToStderr(true)
+
+			envelopeService := newTestEnvelopeService()
+			fakeClock := testingclock.NewFakeClock(time.Now())
+			envelopeTransformer := newEnvelopeTransformerWithClock(envelopeService, testProviderName,
+				func(ctx context.Context) (string, error) {
+					return "1", nil
+				},
+				func(ctx context.Context) error {
+					return nil
+				},
+				aestransformer.NewGCMTransformer, 1*time.Second, fakeClock)
+
+			dataCtx := value.DefaultContext([]byte(testContextText))
+			originalText := []byte(testText)
+
+			transformedData, err := envelopeTransformer.TransformToStorage(tc.ctx, originalText, dataCtx)
+			if err != nil {
+				t.Fatalf("envelopeTransformer: error while transforming data to storage: %v", err)
+			}
+
+			// advance the clock to trigger cache to expire, so we make a decrypt call that will log
+			fakeClock.Step(2 * time.Second)
+
+			_, _, err = envelopeTransformer.TransformFromStorage(tc.ctx, transformedData, dataCtx)
+			if err != nil {
+				t.Fatalf("could not decrypt Envelope transformer's encrypted data even once: %v", err)
+			}
+
+			klog.Flush()
+			klog.SetOutput(&bytes.Buffer{}) // prevent further writes into buf
+			capturedOutput := buf.String()
+
+			// replace the uid with a constant to make the test output stable and assertable
+			capturedOutput = regexp.MustCompile(`uid="[^"]+"`).ReplaceAllString(capturedOutput, `uid="UID"`)
+
+			for _, wantLog := range tc.wantLogs {
+				if !strings.Contains(capturedOutput, wantLog) {
+					t.Errorf("expected log %q, got %q", wantLog, capturedOutput)
 				}
 			}
 		})
