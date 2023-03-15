@@ -289,6 +289,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		// Group=networking.k8s.io, Version=v1alpha1
 	case networkingv1alpha1.SchemeGroupVersion.WithResource("clustercidrs"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Networking().V1alpha1().ClusterCIDRs().Informer()}, nil
+	case networkingv1alpha1.SchemeGroupVersion.WithResource("ipaddresses"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Networking().V1alpha1().IPAddresses().Informer()}, nil
 
 		// Group=networking.k8s.io, Version=v1beta1
 	case networkingv1beta1.SchemeGroupVersion.WithResource("ingresses"):
@@ -349,8 +351,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Rbac().V1beta1().RoleBindings().Informer()}, nil
 
 		// Group=resource.k8s.io, Version=v1alpha2
-	case v1alpha2.SchemeGroupVersion.WithResource("podschedulings"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Resource().V1alpha2().PodSchedulings().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("podschedulingcontexts"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Resource().V1alpha2().PodSchedulingContexts().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("resourceclaims"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Resource().V1alpha2().ResourceClaims().Informer()}, nil
 	case v1alpha2.SchemeGroupVersion.WithResource("resourceclaimtemplates"):

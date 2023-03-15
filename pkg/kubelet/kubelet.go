@@ -31,14 +31,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/opencontainers/selinux/go-selinux"
-
-	"k8s.io/client-go/informers"
-
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	libcontaineruserns "github.com/opencontainers/runc/libcontainer/userns"
+	"github.com/opencontainers/selinux/go-selinux"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"k8s.io/client-go/informers"
 
 	"k8s.io/mount-utils"
 	"k8s.io/utils/integer"
@@ -110,6 +108,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/sysctl"
 	"k8s.io/kubernetes/pkg/kubelet/token"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	"k8s.io/kubernetes/pkg/kubelet/userns"
 	"k8s.io/kubernetes/pkg/kubelet/util"
 	"k8s.io/kubernetes/pkg/kubelet/util/manager"
 	"k8s.io/kubernetes/pkg/kubelet/util/queue"
@@ -908,7 +907,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		StateDirectory:                   rootDirectory,
 	})
 	klet.shutdownManager = shutdownManager
-	klet.usernsManager, err = MakeUserNsManager(klet)
+	klet.usernsManager, err = userns.MakeUserNsManager(klet)
 	if err != nil {
 		return nil, err
 	}
@@ -1256,7 +1255,7 @@ type Kubelet struct {
 	shutdownManager nodeshutdown.Manager
 
 	// Manage user namespaces
-	usernsManager *usernsManager
+	usernsManager *userns.UsernsManager
 
 	// Mutex to serialize new pod admission and existing pod resizing
 	podResizeMutex sync.Mutex
@@ -1509,7 +1508,39 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	ctx := context.Background()
 	if kl.logServer == nil {
-		kl.logServer = http.StripPrefix("/logs/", http.FileServer(http.Dir("/var/log/")))
+		file := http.FileServer(http.Dir(nodeLogDir))
+		if utilfeature.DefaultFeatureGate.Enabled(features.NodeLogQuery) && kl.kubeletConfiguration.EnableSystemLogQuery {
+			kl.logServer = http.StripPrefix("/logs/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if nlq, errs := newNodeLogQuery(req.URL.Query()); len(errs) > 0 {
+					http.Error(w, errs.ToAggregate().Error(), http.StatusBadRequest)
+					return
+				} else if nlq != nil {
+					if req.URL.Path != "/" && req.URL.Path != "" {
+						http.Error(w, "path not allowed in query mode", http.StatusNotAcceptable)
+						return
+					}
+					if errs := nlq.validate(); len(errs) > 0 {
+						http.Error(w, errs.ToAggregate().Error(), http.StatusNotAcceptable)
+						return
+					}
+					// Validation ensures that the request does not query services and files at the same time
+					if len(nlq.Services) > 0 {
+						journal.ServeHTTP(w, req)
+						return
+					}
+					// Validation ensures that the request does not explicitly query multiple files at the same time
+					if len(nlq.Files) == 1 {
+						// Account for the \ being used on Windows clients
+						req.URL.Path = filepath.ToSlash(nlq.Files[0])
+					}
+				}
+				// Fall back in case the caller is directly trying to query a file
+				// Example: kubectl get --raw /api/v1/nodes/$name/proxy/logs/foo.log
+				file.ServeHTTP(w, req)
+			}))
+		} else {
+			kl.logServer = http.StripPrefix("/logs/", file)
+		}
 	}
 	if kl.kubeClient == nil {
 		klog.InfoS("No API server defined - no node status update will be sent")
@@ -2751,7 +2782,16 @@ func (kl *Kubelet) ListenAndServePodResources() {
 		klog.V(2).InfoS("Failed to get local endpoint for PodResources endpoint", "err", err)
 		return
 	}
-	server.ListenAndServePodResources(socket, kl.podManager, kl.containerManager, kl.containerManager, kl.containerManager)
+
+	providers := podresources.PodResourcesProviders{
+		Pods:             kl.podManager,
+		Devices:          kl.containerManager,
+		Cpus:             kl.containerManager,
+		Memory:           kl.containerManager,
+		DynamicResources: kl.containerManager,
+	}
+
+	server.ListenAndServePodResources(socket, providers)
 }
 
 // Delete the eligible dead container instances in a pod. Depending on the configuration, the latest dead containers may be kept around.

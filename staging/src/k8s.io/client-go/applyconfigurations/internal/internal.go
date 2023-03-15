@@ -39,6 +39,17 @@ func Parser() *typed.Parser {
 var parserOnce sync.Once
 var parser *typed.Parser
 var schemaYAML = typed.YAMLObject(`types:
+- name: io.k8s.api.admissionregistration.v1.MatchCondition
+  map:
+    fields:
+    - name: expression
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
 - name: io.k8s.api.admissionregistration.v1.MutatingWebhook
   map:
     fields:
@@ -55,6 +66,14 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: failurePolicy
       type:
         scalar: string
+    - name: matchConditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.admissionregistration.v1.MatchCondition
+          elementRelationship: associative
+          keys:
+          - name
     - name: matchPolicy
       type:
         scalar: string
@@ -167,6 +186,14 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: failurePolicy
       type:
         scalar: string
+    - name: matchConditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.admissionregistration.v1.MatchCondition
+          elementRelationship: associative
+          keys:
+          - name
     - name: matchPolicy
       type:
         scalar: string
@@ -451,6 +478,17 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: reason
       type:
         scalar: string
+- name: io.k8s.api.admissionregistration.v1beta1.MatchCondition
+  map:
+    fields:
+    - name: expression
+      type:
+        scalar: string
+      default: ""
+    - name: name
+      type:
+        scalar: string
+      default: ""
 - name: io.k8s.api.admissionregistration.v1beta1.MutatingWebhook
   map:
     fields:
@@ -467,6 +505,14 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: failurePolicy
       type:
         scalar: string
+    - name: matchConditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.admissionregistration.v1beta1.MatchCondition
+          elementRelationship: associative
+          keys:
+          - name
     - name: matchPolicy
       type:
         scalar: string
@@ -549,6 +595,14 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: failurePolicy
       type:
         scalar: string
+    - name: matchConditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.api.admissionregistration.v1beta1.MatchCondition
+          elementRelationship: associative
+          keys:
+          - name
     - name: matchPolicy
       type:
         scalar: string
@@ -4281,11 +4335,11 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: io.k8s.api.core.v1.ContainerResizePolicy
   map:
     fields:
-    - name: policy
+    - name: resourceName
       type:
         scalar: string
       default: ""
-    - name: resourceName
+    - name: restartPolicy
       type:
         scalar: string
       default: ""
@@ -10125,6 +10179,47 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         scalar: numeric
       default: 0
+- name: io.k8s.api.networking.v1alpha1.IPAddress
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+      default: {}
+    - name: spec
+      type:
+        namedType: io.k8s.api.networking.v1alpha1.IPAddressSpec
+      default: {}
+- name: io.k8s.api.networking.v1alpha1.IPAddressSpec
+  map:
+    fields:
+    - name: parentRef
+      type:
+        namedType: io.k8s.api.networking.v1alpha1.ParentReference
+- name: io.k8s.api.networking.v1alpha1.ParentReference
+  map:
+    fields:
+    - name: group
+      type:
+        scalar: string
+    - name: name
+      type:
+        scalar: string
+    - name: namespace
+      type:
+        scalar: string
+    - name: resource
+      type:
+        scalar: string
+    - name: uid
+      type:
+        scalar: string
 - name: io.k8s.api.networking.v1beta1.HTTPIngressPath
   map:
     fields:
@@ -11370,13 +11465,16 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: availableOnNodes
       type:
         namedType: io.k8s.api.core.v1.NodeSelector
-    - name: resourceHandle
+    - name: resourceHandles
       type:
-        scalar: string
+        list:
+          elementType:
+            namedType: io.k8s.api.resource.v1alpha2.ResourceHandle
+          elementRelationship: atomic
     - name: shareable
       type:
         scalar: boolean
-- name: io.k8s.api.resource.v1alpha2.PodScheduling
+- name: io.k8s.api.resource.v1alpha2.PodSchedulingContext
   map:
     fields:
     - name: apiVersion
@@ -11391,13 +11489,13 @@ var schemaYAML = typed.YAMLObject(`types:
       default: {}
     - name: spec
       type:
-        namedType: io.k8s.api.resource.v1alpha2.PodSchedulingSpec
+        namedType: io.k8s.api.resource.v1alpha2.PodSchedulingContextSpec
       default: {}
     - name: status
       type:
-        namedType: io.k8s.api.resource.v1alpha2.PodSchedulingStatus
+        namedType: io.k8s.api.resource.v1alpha2.PodSchedulingContextStatus
       default: {}
-- name: io.k8s.api.resource.v1alpha2.PodSchedulingSpec
+- name: io.k8s.api.resource.v1alpha2.PodSchedulingContextSpec
   map:
     fields:
     - name: potentialNodes
@@ -11409,7 +11507,7 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: selectedNode
       type:
         scalar: string
-- name: io.k8s.api.resource.v1alpha2.PodSchedulingStatus
+- name: io.k8s.api.resource.v1alpha2.PodSchedulingContextStatus
   map:
     fields:
     - name: resourceClaims
@@ -11584,6 +11682,15 @@ var schemaYAML = typed.YAMLObject(`types:
         scalar: string
       default: ""
     - name: namespace
+      type:
+        scalar: string
+- name: io.k8s.api.resource.v1alpha2.ResourceHandle
+  map:
+    fields:
+    - name: data
+      type:
+        scalar: string
+    - name: driverName
       type:
         scalar: string
 - name: io.k8s.api.scheduling.v1.PriorityClass

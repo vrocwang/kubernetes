@@ -227,8 +227,9 @@ func (ec *Controller) Run(ctx context.Context, workers int) {
 	defer runtime.HandleCrash()
 	defer ec.queue.ShutDown()
 
-	klog.Infof("Starting ephemeral volume controller")
-	defer klog.Infof("Shutting down ephemeral volume controller")
+	logger := klog.FromContext(ctx)
+	logger.Info("Starting ephemeral volume controller")
+	defer logger.Info("Shutting down ephemeral volume controller")
 
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(klog.Infof)
@@ -384,7 +385,7 @@ func (ec *Controller) handleClaim(ctx context.Context, pod *v1.Pod, podClaim v1.
 }
 
 func (ec *Controller) syncClaim(ctx context.Context, namespace, name string) error {
-	logger := klog.LoggerWithValues(klog.FromContext(ctx), "claim", klog.KRef(namespace, name))
+	logger := klog.LoggerWithValues(klog.FromContext(ctx), "PVC", klog.KRef(namespace, name))
 	ctx = klog.NewContext(ctx, logger)
 	claim, err := ec.claimLister.ResourceClaims(namespace).Get(name)
 	if err != nil {
