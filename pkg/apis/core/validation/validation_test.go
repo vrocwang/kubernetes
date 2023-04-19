@@ -7774,6 +7774,34 @@ func TestValidateContainers(t *testing.T) {
 			ImagePullPolicy:          "IfNotPresent",
 			TerminationMessagePolicy: "File",
 		},
+		{
+			Name:                     "resize-policy-cpu",
+			Image:                    "image",
+			ImagePullPolicy:          "IfNotPresent",
+			TerminationMessagePolicy: "File",
+			ResizePolicy: []core.ContainerResizePolicy{
+				{ResourceName: "cpu", RestartPolicy: "NotRequired"},
+			},
+		},
+		{
+			Name:                     "resize-policy-mem",
+			Image:                    "image",
+			ImagePullPolicy:          "IfNotPresent",
+			TerminationMessagePolicy: "File",
+			ResizePolicy: []core.ContainerResizePolicy{
+				{ResourceName: "memory", RestartPolicy: "RestartContainer"},
+			},
+		},
+		{
+			Name:                     "resize-policy-cpu-and-mem",
+			Image:                    "image",
+			ImagePullPolicy:          "IfNotPresent",
+			TerminationMessagePolicy: "File",
+			ResizePolicy: []core.ContainerResizePolicy{
+				{ResourceName: "memory", RestartPolicy: "NotRequired"},
+				{ResourceName: "cpu", RestartPolicy: "RestartContainer"},
+			},
+		},
 	}
 	if errs := validateContainers(successCase, volumeDevices, nil, field.NewPath("field"), PodValidationOptions{}); len(errs) != 0 {
 		t.Errorf("expected success: %v", errs)
@@ -8395,6 +8423,38 @@ func TestValidateContainers(t *testing.T) {
 				},
 			},
 			field.ErrorList{{Type: field.ErrorTypeInvalid, Field: "containers[0].envFrom[0].configMapRef.name"}},
+		},
+		{
+			"Unsupported resize policy for memory",
+			line(),
+			[]core.Container{
+				{
+					Name:                     "resize-policy-mem-invalid",
+					Image:                    "image",
+					ImagePullPolicy:          "IfNotPresent",
+					TerminationMessagePolicy: "File",
+					ResizePolicy: []core.ContainerResizePolicy{
+						{ResourceName: "memory", RestartPolicy: "RestartContainerrrr"},
+					},
+				},
+			},
+			field.ErrorList{{Type: field.ErrorTypeNotSupported, Field: "containers[0].resizePolicy"}},
+		},
+		{
+			"Unsupported resize policy for CPU",
+			line(),
+			[]core.Container{
+				{
+					Name:                     "resize-policy-cpu-invalid",
+					Image:                    "image",
+					ImagePullPolicy:          "IfNotPresent",
+					TerminationMessagePolicy: "File",
+					ResizePolicy: []core.ContainerResizePolicy{
+						{ResourceName: "cpu", RestartPolicy: "RestartNotRequired"},
+					},
+				},
+			},
+			field.ErrorList{{Type: field.ErrorTypeNotSupported, Field: "containers[0].resizePolicy"}},
 		},
 	}
 	for _, tc := range errorCases {
@@ -15961,6 +16021,14 @@ func TestValidateServiceCreate(t *testing.T) {
 			},
 			numErrs: 1,
 		},
+		{
+			name: "topology annotations are mismatched",
+			tweakSvc: func(s *core.Service) {
+				s.Annotations[core.DeprecatedAnnotationTopologyAwareHints] = "original"
+				s.Annotations[core.AnnotationTopologyMode] = "different"
+			},
+			numErrs: 1,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -18596,6 +18664,14 @@ func TestValidateServiceUpdate(t *testing.T) {
 				newSvc.Spec.InternalTrafficPolicy = &cluster
 			},
 			numErrs: 0,
+		},
+		{
+			name: "topology annotations are mismatched",
+			tweakSvc: func(oldSvc, newSvc *core.Service) {
+				newSvc.Annotations[core.DeprecatedAnnotationTopologyAwareHints] = "original"
+				newSvc.Annotations[core.AnnotationTopologyMode] = "different"
+			},
+			numErrs: 1,
 		},
 	}
 

@@ -277,9 +277,9 @@ func ValidateIngressCreate(ingress *networking.Ingress) field.ErrorList {
 	}
 	allErrs = append(allErrs, validateIngress(ingress, opts)...)
 	annotationVal, annotationIsSet := ingress.Annotations[annotationIngressClass]
-	if annotationIsSet && ingress.Spec.IngressClassName != nil {
+	if annotationIsSet && ingress.Spec.IngressClassName != nil && annotationVal != *ingress.Spec.IngressClassName {
 		annotationPath := field.NewPath("annotations").Child(annotationIngressClass)
-		allErrs = append(allErrs, field.Invalid(annotationPath, annotationVal, "can not be set when the class field is also set"))
+		allErrs = append(allErrs, field.Invalid(annotationPath, annotationVal, "must match `ingressClassName` when both are specified"))
 	}
 	return allErrs
 }
@@ -599,27 +599,24 @@ func validateIngressClassParametersReference(params *networking.IngressClassPara
 		return allErrs
 	}
 
-	if params.Scope != nil || params.Namespace != nil {
-		scope := utilpointer.StringDeref(params.Scope, "")
+	scope := utilpointer.StringDeref(params.Scope, "")
 
-		if !supportedIngressClassParametersReferenceScopes.Has(scope) {
-			allErrs = append(allErrs, field.NotSupported(fldPath.Child("scope"), scope,
-				supportedIngressClassParametersReferenceScopes.List()))
-		} else {
-
-			if scope == networking.IngressClassParametersReferenceScopeNamespace {
-				if params.Namespace == nil {
-					allErrs = append(allErrs, field.Required(fldPath.Child("namespace"), "`parameters.scope` is set to 'Namespace'"))
-				} else {
-					for _, msg := range apivalidation.ValidateNamespaceName(*params.Namespace, false) {
-						allErrs = append(allErrs, field.Invalid(fldPath.Child("namespace"), *params.Namespace, msg))
-					}
+	if !supportedIngressClassParametersReferenceScopes.Has(scope) {
+		allErrs = append(allErrs, field.NotSupported(fldPath.Child("scope"), scope,
+			supportedIngressClassParametersReferenceScopes.List()))
+	} else {
+		if scope == networking.IngressClassParametersReferenceScopeNamespace {
+			if params.Namespace == nil {
+				allErrs = append(allErrs, field.Required(fldPath.Child("namespace"), "`parameters.scope` is set to 'Namespace'"))
+			} else {
+				for _, msg := range apivalidation.ValidateNamespaceName(*params.Namespace, false) {
+					allErrs = append(allErrs, field.Invalid(fldPath.Child("namespace"), *params.Namespace, msg))
 				}
 			}
+		}
 
-			if scope == networking.IngressClassParametersReferenceScopeCluster && params.Namespace != nil {
-				allErrs = append(allErrs, field.Forbidden(fldPath.Child("namespace"), "`parameters.scope` is set to 'Cluster'"))
-			}
+		if scope == networking.IngressClassParametersReferenceScopeCluster && params.Namespace != nil {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("namespace"), "`parameters.scope` is set to 'Cluster'"))
 		}
 	}
 

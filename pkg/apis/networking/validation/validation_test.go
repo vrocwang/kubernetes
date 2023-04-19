@@ -993,12 +993,19 @@ func TestValidateIngressCreate(t *testing.T) {
 			},
 			expectedErrs: field.ErrorList{},
 		},
-		"class field and annotation set": {
+		"class field and annotation set with same value": {
+			tweakIngress: func(ingress *networking.Ingress) {
+				ingress.Spec.IngressClassName = utilpointer.String("foo")
+				ingress.Annotations = map[string]string{annotationIngressClass: "foo"}
+			},
+			expectedErrs: field.ErrorList{},
+		},
+		"class field and annotation set with different value": {
 			tweakIngress: func(ingress *networking.Ingress) {
 				ingress.Spec.IngressClassName = utilpointer.String("bar")
 				ingress.Annotations = map[string]string{annotationIngressClass: "foo"}
 			},
-			expectedErrs: field.ErrorList{field.Invalid(field.NewPath("annotations").Child(annotationIngressClass), "foo", "can not be set when the class field is also set")},
+			expectedErrs: field.ErrorList{field.Invalid(field.NewPath("annotations").Child(annotationIngressClass), "foo", "must match `ingressClassName` when both are specified")},
 		},
 		"valid regex path": {
 			tweakIngress: func(ingress *networking.Ingress) {
@@ -1644,6 +1651,14 @@ func TestValidateIngressClass(t *testing.T) {
 				setParams(makeIngressClassParams(nil, "foo", "bar", utilpointer.String("Cluster"), nil)),
 			),
 			expectedErrs: field.ErrorList{},
+		},
+		"valid name, valid controller, invalid scope": {
+			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
+				setParams(makeIngressClassParams(nil, "foo", "bar", nil, utilpointer.String("foo_ns"))),
+			),
+			expectedErrs: field.ErrorList{
+				field.Required(field.NewPath("spec.parameters.scope"), ""),
+			},
 		},
 		"namespace not set when scope is Namespace": {
 			ingressClass: makeValidIngressClass("test123", "foo.co/bar",
