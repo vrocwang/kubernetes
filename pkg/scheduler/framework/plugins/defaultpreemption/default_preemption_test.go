@@ -36,10 +36,11 @@ import (
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/events"
-	kubeschedulerconfigv1beta2 "k8s.io/kube-scheduler/config/v1beta2"
+	"k8s.io/klog/v2/ktesting"
+	kubeschedulerconfigv1 "k8s.io/kube-scheduler/config/v1"
 	extenderv1 "k8s.io/kube-scheduler/extender/v1"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
-	configv1beta2 "k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta2"
+	configv1 "k8s.io/kubernetes/pkg/scheduler/apis/config/v1"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/parallelize"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
@@ -87,10 +88,10 @@ var (
 )
 
 func getDefaultDefaultPreemptionArgs() *config.DefaultPreemptionArgs {
-	v1beta2dpa := &kubeschedulerconfigv1beta2.DefaultPreemptionArgs{}
-	configv1beta2.SetDefaults_DefaultPreemptionArgs(v1beta2dpa)
+	v1dpa := &kubeschedulerconfigv1.DefaultPreemptionArgs{}
+	configv1.SetDefaults_DefaultPreemptionArgs(v1dpa)
 	dpa := &config.DefaultPreemptionArgs{}
-	configv1beta2.Convert_v1beta2_DefaultPreemptionArgs_To_config_DefaultPreemptionArgs(v1beta2dpa, dpa, nil)
+	configv1.Convert_v1_DefaultPreemptionArgs_To_config_DefaultPreemptionArgs(v1dpa, dpa, nil)
 	return dpa
 }
 
@@ -1337,7 +1338,8 @@ func TestSelectBestCandidate(t *testing.T) {
 			cs := clientsetfake.NewSimpleClientset(objs...)
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 			snapshot := internalcache.NewSnapshot(tt.pods, nodes)
-			ctx, cancel := context.WithCancel(context.Background())
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			fwk, err := st.NewFramework(
 				[]st.RegisterPluginFunc{
@@ -1380,7 +1382,7 @@ func TestSelectBestCandidate(t *testing.T) {
 			}
 			offset, numCandidates := pl.GetOffsetAndNumCandidates(int32(len(nodeInfos)))
 			candidates, _, _ := pe.DryRunPreemption(ctx, tt.pod, nodeInfos, nil, offset, numCandidates)
-			s := pe.SelectCandidate(candidates)
+			s := pe.SelectCandidate(logger, candidates)
 			if s == nil || len(s.Name()) == 0 {
 				return
 			}
