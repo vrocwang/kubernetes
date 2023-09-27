@@ -101,7 +101,7 @@ func newPodQuota(name, number string) *v1.ResourceQuota {
 
 var _ = SIGDescribe("ReplicaSet", func() {
 	f := framework.NewDefaultFramework("replicaset")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
 
 	/*
 		Release: v1.9
@@ -251,7 +251,7 @@ func testReplicaSetConditionCheck(ctx context.Context, f *framework.Framework) {
 		podQuota := quota.Status.Hard[v1.ResourcePods]
 		return (&podQuota).Cmp(quantity) == 0, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("resource quota %q never synced", name)
 	}
 	framework.ExpectNoError(err)
@@ -279,7 +279,7 @@ func testReplicaSetConditionCheck(ctx context.Context, f *framework.Framework) {
 		return cond != nil, nil
 
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("rs controller never added the failure condition for replica set %q: %#v", name, conditions)
 	}
 	framework.ExpectNoError(err)
@@ -308,7 +308,7 @@ func testReplicaSetConditionCheck(ctx context.Context, f *framework.Framework) {
 		cond := replicaset.GetCondition(rs.Status, appsv1.ReplicaSetReplicaFailure)
 		return cond == nil, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("rs controller never removed the failure condition for rs %q: %#v", name, conditions)
 	}
 	framework.ExpectNoError(err)
@@ -515,7 +515,7 @@ func testRSLifeCycle(ctx context.Context, f *framework.Framework) {
 			"replicas": rsPatchReplicas,
 			"template": map[string]interface{}{
 				"spec": map[string]interface{}{
-					"TerminationGracePeriodSeconds": &zero,
+					"terminationGracePeriodSeconds": &zero,
 					"containers": [1]map[string]interface{}{{
 						"name":  rsName,
 						"image": rsPatchImage,
@@ -536,7 +536,8 @@ func testRSLifeCycle(ctx context.Context, f *framework.Framework) {
 				rset.ObjectMeta.Labels["test-rs"] == "patched" &&
 				rset.Status.ReadyReplicas == rsPatchReplicas &&
 				rset.Status.AvailableReplicas == rsPatchReplicas &&
-				rset.Spec.Template.Spec.Containers[0].Image == rsPatchImage
+				rset.Spec.Template.Spec.Containers[0].Image == rsPatchImage &&
+				*rset.Spec.Template.Spec.TerminationGracePeriodSeconds == zero
 			if !found {
 				framework.Logf("observed ReplicaSet %v in namespace %v with ReadyReplicas %v, AvailableReplicas %v", rset.ObjectMeta.Name, rset.ObjectMeta.Namespace, rset.Status.ReadyReplicas,
 					rset.Status.AvailableReplicas)

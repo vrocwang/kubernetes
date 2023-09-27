@@ -19,6 +19,7 @@ package apps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -69,7 +70,7 @@ type watchEventConfig struct {
 
 var _ = SIGDescribe("Job", func() {
 	f := framework.NewDefaultFramework("job")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelPrivileged
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 	parallelism := int32(2)
 	completions := int32(4)
 
@@ -286,7 +287,7 @@ var _ = SIGDescribe("Job", func() {
 				return false, err
 			}
 			return len(pods.Items) > 0, nil
-		}), wait.ErrWaitTimeout)
+		}), wait.ErrorInterrupted(errors.New("timed out waiting for the condition")))
 
 		ginkgo.By("Checking Job status to observe Suspended state")
 		job, err = e2ejob.GetJob(ctx, f.ClientSet, f.Namespace.Name, job.Name)

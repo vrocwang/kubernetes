@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -74,6 +75,16 @@ const (
 // node selectors labels to namespaces
 var NamespaceNodeSelectors = []string{"scheduler.alpha.kubernetes.io/node-selector"}
 
+var nonTerminalPhaseSelector = func() labels.Selector {
+	var reqs []labels.Requirement
+	for _, phase := range []v1.PodPhase{v1.PodFailed, v1.PodSucceeded} {
+		req, _ := labels.NewRequirement("status.phase", selection.NotEquals, []string{string(phase)})
+		reqs = append(reqs, *req)
+	}
+	selector := labels.NewSelector()
+	return selector.Add(reqs...)
+}()
+
 type updateDSFunc func(*appsv1.DaemonSet)
 
 // updateDaemonSetWithRetries updates daemonsets with the given applyUpdate func
@@ -94,7 +105,7 @@ func updateDaemonSetWithRetries(ctx context.Context, c clientset.Interface, name
 		updateErr = err
 		return false, nil
 	})
-	if pollErr == wait.ErrWaitTimeout {
+	if wait.Interrupted(pollErr) {
 		pollErr = fmt.Errorf("couldn't apply the provided updated to DaemonSet %q: %v", name, updateErr)
 	}
 	return ds, pollErr
@@ -135,7 +146,7 @@ var _ = SIGDescribe("Daemon set [Serial]", func() {
 	})
 
 	f = framework.NewDefaultFramework("daemonsets")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
 
 	image := WebserverImage
 	dsName := "daemon-set"
@@ -362,7 +373,7 @@ var _ = SIGDescribe("Daemon set [Serial]", func() {
 		waitForHistoryCreated(ctx, c, ns, label, 2)
 		cur := curHistory(listDaemonHistories(ctx, c, ns, label), ds)
 		framework.ExpectEqual(cur.Revision, int64(2))
-		framework.ExpectNotEqual(cur.Labels[appsv1.DefaultDaemonSetUniqueLabelKey], firstHash)
+		gomega.Expect(cur.Labels).NotTo(gomega.HaveKeyWithValue(appsv1.DefaultDaemonSetUniqueLabelKey, firstHash))
 		checkDaemonSetPodsLabels(listDaemonPods(ctx, c, ns, label), firstHash)
 	})
 
@@ -475,9 +486,9 @@ var _ = SIGDescribe("Daemon set [Serial]", func() {
 		if len(schedulableNodes.Items) < 2 {
 			framework.ExpectEqual(len(existingPods), 0)
 		} else {
-			framework.ExpectNotEqual(len(existingPods), 0)
+			gomega.Expect(existingPods).NotTo(gomega.BeEmpty())
 		}
-		framework.ExpectNotEqual(len(newPods), 0)
+		gomega.Expect(newPods).NotTo(gomega.BeEmpty())
 
 		framework.Logf("Roll back the DaemonSet before rollout is complete")
 		rollbackDS, err := updateDaemonSetWithRetries(ctx, c, ns, ds.Name, func(update *appsv1.DaemonSet) {
@@ -510,7 +521,7 @@ var _ = SIGDescribe("Daemon set [Serial]", func() {
 		maxSurgeOverlap := 60 * time.Second
 		maxSurge := 1
 		surgePercent := intstr.FromString("20%")
-		zero := intstr.FromInt(0)
+		zero := intstr.FromInt32(0)
 		oldVersion := "1"
 		ds := newDaemonSet(dsName, image, label)
 		ds.Spec.Template.Spec.Containers[0].Env = []v1.EnvVar{
@@ -1025,7 +1036,10 @@ func newDaemonSetWithLabel(dsName, image string, label map[string]string) *appsv
 
 func listDaemonPods(ctx context.Context, c clientset.Interface, ns string, label map[string]string) *v1.PodList {
 	selector := labels.Set(label).AsSelector()
-	options := metav1.ListOptions{LabelSelector: selector.String()}
+	options := metav1.ListOptions{
+		LabelSelector: selector.String(),
+		FieldSelector: nonTerminalPhaseSelector.String(),
+	}
 	podList, err := c.CoreV1().Pods(ns).List(ctx, options)
 	framework.ExpectNoError(err)
 	gomega.Expect(podList.Items).ToNot(gomega.BeEmpty())

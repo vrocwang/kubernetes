@@ -37,7 +37,7 @@ import (
 	"strings"
 	"time"
 
-	openapi_v2 "github.com/google/gnostic/openapiv2"
+	openapi_v2 "github.com/google/gnostic-models/openapiv2"
 	"github.com/google/go-cmp/cmp"
 
 	"sigs.k8s.io/yaml"
@@ -59,6 +59,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubernetes/pkg/controller"
 	commonutils "k8s.io/kubernetes/test/e2e/common"
@@ -257,7 +258,7 @@ func runKubectlRetryOrDie(ns string, args ...string) string {
 var _ = SIGDescribe("Kubectl client", func() {
 	defer ginkgo.GinkgoRecover()
 	f := framework.NewDefaultFramework("kubectl")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
 
 	// Reusable cluster state function.  This won't be adversely affected by lazy initialization of framework.
 	clusterState := func() *framework.ClusterVerification {
@@ -433,7 +434,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 				veryLongData[i] = 'a'
 			}
 			execOutput = e2ekubectl.RunKubectlOrDie(ns, "exec", podRunningTimeoutArg, simplePodName, "--", "echo", string(veryLongData))
-			framework.ExpectEqual(string(veryLongData), strings.TrimSpace(execOutput), "Unexpected kubectl exec output")
+			gomega.Expect(string(veryLongData)).To(gomega.Equal(strings.TrimSpace(execOutput)), "Unexpected kubectl exec output")
 
 			ginkgo.By("executing a command in the container with noninteractive stdin")
 			execOutput = e2ekubectl.NewKubectlCommand(ns, "exec", "-i", podRunningTimeoutArg, simplePodName, "--", "cat").
@@ -469,10 +470,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 		})
 
 		ginkgo.It("should support exec through an HTTP proxy", func(ctx context.Context) {
-			// Fail if the variable isn't set
-			if framework.TestContext.Host == "" {
-				framework.Failf("--host variable must be set to the full URI to the api server on e2e run.")
-			}
+			testContextHost := getTestContextHost()
 
 			ginkgo.By("Starting http_proxy")
 			var proxyLogs bytes.Buffer
@@ -497,7 +495,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 				}
 
 				// Verify the proxy server logs saw the connection
-				expectedProxyLog := fmt.Sprintf("Accepting CONNECT to %s", strings.TrimSuffix(strings.TrimPrefix(framework.TestContext.Host, "https://"), "/api"))
+				expectedProxyLog := fmt.Sprintf("Accepting CONNECT to %s", strings.TrimSuffix(strings.TrimPrefix(testContextHost, "https://"), "/api"))
 
 				proxyLog := proxyLogs.String()
 				if !strings.Contains(proxyLog, expectedProxyLog) {
@@ -507,10 +505,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 		})
 
 		ginkgo.It("should support exec through kubectl proxy", func(ctx context.Context) {
-			// Fail if the variable isn't set
-			if framework.TestContext.Host == "" {
-				framework.Failf("--host variable must be set to the full URI to the api server on e2e run.")
-			}
+			_ = getTestContextHost()
 
 			ginkgo.By("Starting kubectl proxy")
 			port, proxyCmd, err := startProxyServer(ns)
@@ -544,7 +539,7 @@ var _ = SIGDescribe("Kubectl client", func() {
 				if !ok {
 					framework.Failf("Got unexpected error type, expected uexec.ExitError, got %T: %v", err, err)
 				}
-				framework.ExpectEqual(ee.ExitStatus(), 42)
+				gomega.Expect(ee.ExitStatus()).To(gomega.Equal(42))
 			})
 
 			ginkgo.It("should support port-forward", func(ctx context.Context) {
@@ -671,7 +666,7 @@ metadata:
 				ginkgo.By("trying to use kubectl with invalid token")
 				_, err = e2eoutput.RunHostCmd(ns, simplePodName, "/tmp/kubectl get pods --token=invalid --v=7 2>&1")
 				framework.Logf("got err %v", err)
-				framework.ExpectError(err)
+				gomega.Expect(err).To(gomega.HaveOccurred())
 				gomega.Expect(err).To(gomega.ContainSubstring("Using in-cluster namespace"))
 				gomega.Expect(err).To(gomega.ContainSubstring("Using in-cluster configuration"))
 				gomega.Expect(err).To(gomega.ContainSubstring("Response Status: 401 Unauthorized"))
@@ -679,7 +674,7 @@ metadata:
 				ginkgo.By("trying to use kubectl with invalid server")
 				_, err = e2eoutput.RunHostCmd(ns, simplePodName, "/tmp/kubectl get pods --server=invalid --v=6 2>&1")
 				framework.Logf("got err %v", err)
-				framework.ExpectError(err)
+				gomega.Expect(err).To(gomega.HaveOccurred())
 				gomega.Expect(err).To(gomega.ContainSubstring("Unable to connect to the server"))
 				gomega.Expect(err).To(gomega.ContainSubstring("GET http://invalid/api"))
 
@@ -710,7 +705,7 @@ metadata:
 				if !ok {
 					framework.Failf("Got unexpected error type, expected uexec.ExitError, got %T: %v", err, err)
 				}
-				framework.ExpectEqual(ee.ExitStatus(), 42)
+				gomega.Expect(ee.ExitStatus()).To(gomega.Equal(42))
 			})
 
 			ginkgo.It("[Slow] running a failing command without --restart=Never", func(ctx context.Context) {
@@ -1164,7 +1159,7 @@ metadata:
 			time.Sleep(10 * time.Second)
 
 			schema := schemaForGVK(schema.GroupVersionKind{Group: crd.Crd.Spec.Group, Version: crd.Crd.Spec.Versions[0].Name, Kind: crd.Crd.Spec.Names.Kind})
-			framework.ExpectNotEqual(schema, nil, "retrieving a schema for the crd")
+			gomega.Expect(schema).ToNot(gomega.BeNil(), "retrieving a schema for the crd")
 
 			meta := fmt.Sprintf(metaPattern, crd.Crd.Spec.Names.Kind, crd.Crd.Spec.Group, crd.Crd.Spec.Versions[0].Name, "test-cr")
 
@@ -1172,7 +1167,8 @@ metadata:
 			// are still considered invalid
 			invalidArbitraryCR := fmt.Sprintf(`{%s,"spec":{"bars":[{"name":"test-bar"}],"extraProperty":"arbitrary-value"}}`, meta)
 			err = createApplyCustomResource(invalidArbitraryCR, f.Namespace.Name, "test-cr", crd)
-			framework.ExpectError(err, "creating custom resource")
+			gomega.Expect(err).To(gomega.HaveOccurred(), "creating custom resource")
+
 			if !strings.Contains(err.Error(), `unknown field "spec.extraProperty"`) {
 				framework.Failf("incorrect error from createApplyCustomResource: %v", err)
 			}
@@ -1215,7 +1211,7 @@ metadata:
 			ginkgo.By("attempting to create a CR with unknown metadata fields at the root level")
 			gvk := schema.GroupVersionKind{Group: testCRD.Crd.Spec.Group, Version: testCRD.Crd.Spec.Versions[0].Name, Kind: testCRD.Crd.Spec.Names.Kind}
 			schema := schemaForGVK(gvk)
-			framework.ExpectNotEqual(schema, nil, "retrieving a schema for the crd")
+			gomega.Expect(schema).ToNot(gomega.BeNil(), "retrieving a schema for the crd")
 			embeddedCRPattern := `
 
 {%s,
@@ -1675,7 +1671,12 @@ metadata:
 			// we expect following values for: Major -> digit, Minor -> numeric followed by an optional '+',  GitCommit -> alphanumeric
 			requiredItems := []string{"Client Version: ", "Server Version: "}
 			for _, item := range requiredItems {
-				if matched, _ := regexp.MatchString(item+`version.Info\{Major:"\d", Minor:"\d+\+?", GitVersion:"v\d\.\d+\.[\d\w\-\.\+]+", GitCommit:"[0-9a-f]+"`, versionString); !matched {
+				// prior to 1.28 we printed long version information
+				oldMatched, _ := regexp.MatchString(item+`version.Info\{Major:"\d", Minor:"\d+\+?", GitVersion:"v\d\.\d+\.[\d\w\-\.\+]+", GitCommit:"[0-9a-f]+"`, versionString)
+				// 1.28+ prints short information
+				newMatched, _ := regexp.MatchString(item+`v\d\.\d+\.[\d\w\-\.\+]+`, versionString)
+				// due to backwards compatibility we need to match both until 1.30 most likely
+				if !oldMatched && !newMatched {
 					framework.Failf("Item %s value is not valid in %s\n", item, versionString)
 				}
 			}
@@ -2064,6 +2065,27 @@ metadata:
 		})
 	})
 })
+
+func getTestContextHost() string {
+	if len(framework.TestContext.Host) > 0 {
+		return framework.TestContext.Host
+	}
+	// if there is a kubeconfig, pick the first server from it
+	if framework.TestContext.KubeConfig != "" {
+		c, err := clientcmd.LoadFromFile(framework.TestContext.KubeConfig)
+		if err == nil {
+			for _, v := range c.Clusters {
+				if v.Server != "" {
+					framework.Logf("--host variable was not set, picking up the first server from %s",
+						framework.TestContext.KubeConfig)
+					return v.Server
+				}
+			}
+		}
+	}
+	framework.Failf("--host variable must be set to the full URI to the api server on e2e run.")
+	return ""
+}
 
 // Checks whether the output split by line contains the required elements.
 func checkOutputReturnError(output string, required [][]string) error {

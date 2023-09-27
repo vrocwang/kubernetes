@@ -62,7 +62,7 @@ import (
 	testutil "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	admissionapi "k8s.io/pod-security-admission/api"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -86,7 +86,7 @@ var _ = SIGDescribe("Deployment", func() {
 	})
 
 	f := framework.NewDefaultFramework("deployment")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
 
 	ginkgo.BeforeEach(func() {
 		c = f.ClientSet
@@ -184,6 +184,7 @@ var _ = SIGDescribe("Deployment", func() {
 	*/
 	framework.ConformanceIt("should run the lifecycle of a Deployment", func(ctx context.Context) {
 		one := int64(1)
+		two := int64(2)
 		deploymentResource := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 		testNamespaceName := f.Namespace.Name
 		testDeploymentName := "test-deployment"
@@ -193,6 +194,7 @@ var _ = SIGDescribe("Deployment", func() {
 		testDeploymentDefaultReplicas := int32(2)
 		testDeploymentMinimumReplicas := int32(1)
 		testDeploymentNoReplicas := int32(0)
+		testDeploymentAvailableReplicas := int32(0)
 		testDeploymentLabels := map[string]string{"test-deployment-static": "true"}
 		testDeploymentLabelsFlat := "test-deployment-static=true"
 		w := &cache.ListWatch{
@@ -259,7 +261,7 @@ var _ = SIGDescribe("Deployment", func() {
 				"replicas": testDeploymentMinimumReplicas,
 				"template": map[string]interface{}{
 					"spec": map[string]interface{}{
-						"TerminationGracePeriodSeconds": &one,
+						"terminationGracePeriodSeconds": &two,
 						"containers": [1]map[string]interface{}{{
 							"name":  testDeploymentName,
 							"image": testDeploymentPatchImage,
@@ -301,7 +303,8 @@ var _ = SIGDescribe("Deployment", func() {
 					deployment.Status.ReadyReplicas == testDeploymentMinimumReplicas &&
 					deployment.Status.UpdatedReplicas == testDeploymentMinimumReplicas &&
 					deployment.Status.UnavailableReplicas == 0 &&
-					deployment.Spec.Template.Spec.Containers[0].Image == testDeploymentPatchImage
+					deployment.Spec.Template.Spec.Containers[0].Image == testDeploymentPatchImage &&
+					*deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == two
 				if !found {
 					framework.Logf("observed Deployment %v in namespace %v with ReadyReplicas %v", deployment.ObjectMeta.Name, deployment.ObjectMeta.Namespace, deployment.Status.ReadyReplicas)
 				}
@@ -397,14 +400,14 @@ var _ = SIGDescribe("Deployment", func() {
 				"labels": map[string]string{"test-deployment": "patched-status"},
 			},
 			"status": map[string]interface{}{
-				"readyReplicas": testDeploymentNoReplicas,
+				"readyReplicas":     testDeploymentNoReplicas,
+				"availableReplicas": testDeploymentAvailableReplicas,
 			},
 		})
 		framework.ExpectNoError(err, "failed to Marshal Deployment JSON patch")
-		// This test is broken, patching fails with:
-		// Deployment.apps "test-deployment" is invalid: status.availableReplicas: Invalid value: 2: cannot be greater than readyReplicas
-		// https://github.com/kubernetes/kubernetes/issues/113259
-		_, _ = dc.Resource(deploymentResource).Namespace(testNamespaceName).Patch(ctx, testDeploymentName, types.StrategicMergePatchType, []byte(deploymentStatusPatch), metav1.PatchOptions{}, "status")
+
+		_, err = dc.Resource(deploymentResource).Namespace(testNamespaceName).Patch(ctx, testDeploymentName, types.StrategicMergePatchType, []byte(deploymentStatusPatch), metav1.PatchOptions{}, "status")
+		framework.ExpectNoError(err)
 
 		ctxUntil, cancel = context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -667,11 +670,6 @@ func failureTrap(ctx context.Context, c clientset.Interface, ns string) {
 	}
 }
 
-func intOrStrP(num int) *intstr.IntOrString {
-	intstr := intstr.FromInt(num)
-	return &intstr
-}
-
 func stopDeployment(ctx context.Context, c clientset.Interface, ns, deploymentName string) {
 	deployment, err := c.AppsV1().Deployments(ns).Get(ctx, deploymentName, metav1.GetOptions{})
 	framework.ExpectNoError(err)
@@ -692,7 +690,7 @@ func stopDeployment(ctx context.Context, c clientset.Interface, ns, deploymentNa
 	options := metav1.ListOptions{LabelSelector: selector.String()}
 	rss, err := c.AppsV1().ReplicaSets(ns).List(ctx, options)
 	framework.ExpectNoError(err)
-	gomega.Expect(rss.Items).Should(gomega.HaveLen(0))
+	gomega.Expect(rss.Items).Should(gomega.BeEmpty())
 	framework.Logf("Ensuring deployment %s's Pods were deleted", deploymentName)
 	var pods *v1.PodList
 	if err := wait.PollImmediate(time.Second, timeout, func() (bool, error) {
@@ -734,7 +732,7 @@ func testDeleteDeployment(ctx context.Context, f *framework.Framework) {
 	framework.ExpectNoError(err)
 	newRS, err := testutil.GetNewReplicaSet(deployment, c)
 	framework.ExpectNoError(err)
-	framework.ExpectNotEqual(newRS, nilRs)
+	gomega.Expect(newRS).NotTo(gomega.Equal(nilRs))
 	stopDeployment(ctx, c, ns, deploymentName)
 }
 
@@ -832,7 +830,7 @@ func testDeploymentCleanUpPolicy(ctx context.Context, f *framework.Framework) {
 	}
 	rsName := "test-cleanup-controller"
 	replicas := int32(1)
-	revisionHistoryLimit := utilpointer.Int32(0)
+	revisionHistoryLimit := ptr.To[int32](0)
 	_, err := c.AppsV1().ReplicaSets(ns).Create(ctx, newRS(rsName, replicas, rsPodLabels, WebserverImageName, WebserverImage, nil), metav1.CreateOptions{})
 	framework.ExpectNoError(err)
 
@@ -925,8 +923,8 @@ func testRolloverDeployment(ctx context.Context, f *framework.Framework) {
 	framework.Logf("Creating deployment %q", deploymentName)
 	newDeployment := e2edeployment.NewDeployment(deploymentName, deploymentReplicas, deploymentPodLabels, deploymentImageName, deploymentImage, deploymentStrategyType)
 	newDeployment.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
-		MaxUnavailable: intOrStrP(0),
-		MaxSurge:       intOrStrP(1),
+		MaxUnavailable: ptr.To(intstr.FromInt32(0)),
+		MaxSurge:       ptr.To(intstr.FromInt32(1)),
 	}
 	newDeployment.Spec.MinReadySeconds = int32(10)
 	_, err = c.AppsV1().Deployments(ns).Create(ctx, newDeployment, metav1.CreateOptions{})
@@ -1194,8 +1192,8 @@ func testProportionalScalingDeployment(ctx context.Context, f *framework.Framewo
 	deploymentName := "webserver-deployment"
 	d := e2edeployment.NewDeployment(deploymentName, replicas, podLabels, WebserverImageName, WebserverImage, appsv1.RollingUpdateDeploymentStrategyType)
 	d.Spec.Strategy.RollingUpdate = new(appsv1.RollingUpdateDeployment)
-	d.Spec.Strategy.RollingUpdate.MaxSurge = intOrStrP(3)
-	d.Spec.Strategy.RollingUpdate.MaxUnavailable = intOrStrP(2)
+	d.Spec.Strategy.RollingUpdate.MaxSurge = ptr.To(intstr.FromInt32(3))
+	d.Spec.Strategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt32(2))
 
 	framework.Logf("Creating deployment %q", deploymentName)
 	deployment, err := c.AppsV1().Deployments(ns).Create(ctx, d, metav1.CreateOptions{})
@@ -1377,8 +1375,8 @@ func testRollingUpdateDeploymentWithLocalTrafficLoadBalancer(ctx context.Context
 	// performing a rollout.
 	setAffinities(d, false)
 	d.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
-		MaxSurge:       intOrStrP(1),
-		MaxUnavailable: intOrStrP(0),
+		MaxSurge:       ptr.To(intstr.FromInt32(1)),
+		MaxUnavailable: ptr.To(intstr.FromInt32(0)),
 	}
 	deployment, err := c.AppsV1().Deployments(ns).Create(ctx, d, metav1.CreateOptions{})
 	framework.ExpectNoError(err)
@@ -1551,7 +1549,7 @@ func watchRecreateDeployment(ctx context.Context, c clientset.Interface, d *apps
 	ctxUntil, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	_, err := watchtools.Until(ctxUntil, d.ResourceVersion, w, condition)
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("deployment %q never completed: %#v", d.Name, status)
 	}
 	return err
@@ -1575,7 +1573,7 @@ func waitForDeploymentOldRSsNum(ctx context.Context, c clientset.Interface, ns, 
 		}
 		return len(oldRSs) == desiredRSNum, nil
 	})
-	if pollErr == wait.ErrWaitTimeout {
+	if wait.Interrupted(pollErr) {
 		pollErr = fmt.Errorf("%d old replica sets were not cleaned up for deployment %q", len(oldRSs)-desiredRSNum, deploymentName)
 		testutil.LogReplicaSetsOfDeployment(d, oldRSs, nil, framework.Logf)
 	}
@@ -1592,7 +1590,7 @@ func waitForReplicaSetDesiredReplicas(ctx context.Context, rsClient appsclient.R
 		}
 		return rs.Status.ObservedGeneration >= desiredGeneration && rs.Status.Replicas == *(replicaSet.Spec.Replicas) && rs.Status.Replicas == *(rs.Spec.Replicas), nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("replicaset %q never had desired number of replicas", replicaSet.Name)
 	}
 	return err
@@ -1608,7 +1606,7 @@ func waitForReplicaSetTargetSpecReplicas(ctx context.Context, c clientset.Interf
 		}
 		return rs.Status.ObservedGeneration >= desiredGeneration && *rs.Spec.Replicas == targetReplicaNum, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("replicaset %q never had desired number of .spec.replicas", replicaSet.Name)
 	}
 	return err

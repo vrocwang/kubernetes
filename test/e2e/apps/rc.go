@@ -19,6 +19,7 @@ package apps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -51,7 +52,7 @@ import (
 
 var _ = SIGDescribe("ReplicationController", func() {
 	f := framework.NewDefaultFramework("replication-controller")
-	f.NamespacePodSecurityEnforceLevel = admissionapi.LevelBaseline
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
 
 	var ns string
 	var dc dynamic.Interface
@@ -501,7 +502,7 @@ func TestReplicationControllerServeImageOrFail(ctx context.Context, f *framework
 	pods, err := e2epod.PodsCreated(ctx, f.ClientSet, f.Namespace.Name, name, replicas)
 	framework.ExpectNoError(err)
 
-	// Wait for the pods to enter the running state. Waiting loops until the pods
+	// Wait for the pods to enter the running state and are Ready. Waiting loops until the pods
 	// are running so non-running pods cause a timeout for this test.
 	framework.Logf("Ensuring all pods for ReplicationController %q are running", name)
 	running := int32(0)
@@ -509,7 +510,7 @@ func TestReplicationControllerServeImageOrFail(ctx context.Context, f *framework
 		if pod.DeletionTimestamp != nil {
 			continue
 		}
-		err = e2epod.WaitForPodNameRunningInNamespace(ctx, f.ClientSet, pod.Name, f.Namespace.Name)
+		err = e2epod.WaitTimeoutForPodReadyInNamespace(ctx, f.ClientSet, pod.Name, f.Namespace.Name, framework.PodStartTimeout)
 		if err != nil {
 			updatePod, getErr := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Get(ctx, pod.Name, metav1.GetOptions{})
 			if getErr == nil {
@@ -519,12 +520,12 @@ func TestReplicationControllerServeImageOrFail(ctx context.Context, f *framework
 			}
 		}
 		framework.ExpectNoError(err)
-		framework.Logf("Pod %q is running (conditions: %+v)", pod.Name, pod.Status.Conditions)
+		framework.Logf("Pod %q is running and ready(conditions: %+v)", pod.Name, pod.Status.Conditions)
 		running++
 	}
 
 	// Sanity check
-	framework.ExpectEqual(running, replicas, "unexpected number of running pods: %+v", pods.Items)
+	framework.ExpectEqual(running, replicas, "unexpected number of running and ready pods: %+v", pods.Items)
 
 	// Verify that something is listening.
 	framework.Logf("Trying to dial the pod")
@@ -554,7 +555,7 @@ func testReplicationControllerConditionCheck(ctx context.Context, f *framework.F
 		quantity := resource.MustParse("2")
 		return (&podQuota).Cmp(quantity) == 0, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("resource quota %q never synced", name)
 	}
 	framework.ExpectNoError(err)
@@ -581,7 +582,7 @@ func testReplicationControllerConditionCheck(ctx context.Context, f *framework.F
 		cond := replication.GetCondition(rc.Status, v1.ReplicationControllerReplicaFailure)
 		return cond != nil, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("rc manager never added the failure condition for rc %q: %#v", name, conditions)
 	}
 	framework.ExpectNoError(err)
@@ -610,7 +611,7 @@ func testReplicationControllerConditionCheck(ctx context.Context, f *framework.F
 		cond := replication.GetCondition(rc.Status, v1.ReplicationControllerReplicaFailure)
 		return cond == nil, nil
 	})
-	if err == wait.ErrWaitTimeout {
+	if wait.Interrupted(err) {
 		err = fmt.Errorf("rc manager never removed the failure condition for rc %q: %#v", name, conditions)
 	}
 	framework.ExpectNoError(err)
@@ -732,7 +733,7 @@ func updateReplicationControllerWithRetries(ctx context.Context, c clientset.Int
 		updateErr = err
 		return false, nil
 	})
-	if pollErr == wait.ErrWaitTimeout {
+	if wait.Interrupted(pollErr) {
 		pollErr = fmt.Errorf("couldn't apply the provided updated to rc %q: %v", name, updateErr)
 	}
 	return rc, pollErr
@@ -778,7 +779,7 @@ func watchUntilWithoutRetry(ctx context.Context, watcher watch.Interface, condit
 				}
 
 			case <-ctx.Done():
-				return lastEvent, wait.ErrWaitTimeout
+				return lastEvent, wait.ErrorInterrupted(errors.New("timed out waiting for the condition"))
 			}
 		}
 	}
