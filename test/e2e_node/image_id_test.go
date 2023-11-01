@@ -32,7 +32,7 @@ import (
 
 var _ = SIGDescribe("ImageID [NodeFeature: ImageID]", func() {
 
-	busyBoxImage := "registry.k8s.io/busybox@sha256:4bdd623e848417d96127e16037743f0cd8b528c026e9175e22a84f639eca58ff"
+	busyBoxImage := "registry.k8s.io/e2e-test-images/busybox@sha256:a9155b13325b2abef48e71de77bb8ac015412a566829f621d06bfae5c699b1b9"
 
 	f := framework.NewDefaultFramework("image-id-test")
 	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
@@ -60,12 +60,12 @@ var _ = SIGDescribe("ImageID [NodeFeature: ImageID]", func() {
 		framework.ExpectNoError(err)
 
 		status := runningPod.Status
-
-		if len(status.ContainerStatuses) == 0 {
-			framework.Failf("Unexpected pod status; %s", dump.Pretty(status))
-			return
-		}
-
-		gomega.Expect(status.ContainerStatuses[0].ImageID).To(gomega.ContainSubstring(busyBoxImage))
+		gomega.Expect(status.ContainerStatuses).To(gomega.HaveLen(1), dump.Pretty(status))
+		gomega.Expect(status.ContainerStatuses[0].ImageID).To(
+			gomega.SatisfyAny(
+				gomega.Equal(busyBoxImage),
+				gomega.MatchRegexp(`[[:xdigit:]]{64}`),
+			),
+		)
 	})
 })

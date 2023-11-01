@@ -31,8 +31,8 @@ import (
 	kubeletpodresourcesv1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
+	apisgrpc "k8s.io/kubernetes/pkg/kubelet/apis/grpc"
 	"k8s.io/kubernetes/pkg/kubelet/apis/podresources"
-	podresourcesgrpc "k8s.io/kubernetes/pkg/kubelet/apis/podresources/grpc"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	"k8s.io/kubernetes/pkg/kubelet/util"
 	testutils "k8s.io/kubernetes/test/utils"
@@ -566,7 +566,7 @@ func podresourcesGetAllocatableResourcesTests(ctx context.Context, cli kubeletpo
 	ginkgo.By(fmt.Sprintf("expecting some %q devices reported", sd.resourceName))
 	gomega.ExpectWithOffset(1, devs).ToNot(gomega.BeEmpty())
 	for _, dev := range devs {
-		framework.ExpectEqual(dev.ResourceName, sd.resourceName)
+		gomega.Expect(dev.ResourceName).To(gomega.Equal(sd.resourceName))
 		gomega.ExpectWithOffset(1, dev.DeviceIds).ToNot(gomega.BeEmpty())
 	}
 }
@@ -859,8 +859,7 @@ var _ = SIGDescribe("POD Resources [Serial] [Feature:PodResources][NodeFeature:P
 						if dev.ResourceName != defaultTopologyUnawareResourceName {
 							continue
 						}
-
-						framework.ExpectEqual(dev.Topology == nil, true, "Topology is expected to be empty for topology unaware resources")
+						gomega.Expect(dev.Topology).To(gomega.BeNil(), "Topology is expected to be empty for topology unaware resources")
 					}
 
 					desc := podDesc{
@@ -974,7 +973,7 @@ var _ = SIGDescribe("POD Resources [Serial] [Feature:PodResources][NodeFeature:P
 			framework.ExpectNoError(err, "GetV1Client() failed err %v", err)
 			defer conn.Close()
 
-			tries := podresourcesgrpc.DefaultQPS * 2 // This should also be greater than DefaultBurstTokens
+			tries := podresources.DefaultQPS * 2 // This should also be greater than DefaultBurstTokens
 			errs := []error{}
 
 			ginkgo.By(fmt.Sprintf("Issuing %d List() calls in a tight loop", tries))
@@ -994,7 +993,7 @@ var _ = SIGDescribe("POD Resources [Serial] [Feature:PodResources][NodeFeature:P
 			// constraints than to risk flakes at this stage.
 			errLimitExceededCount := 0
 			for _, err := range errs[1:] {
-				if errors.Is(err, podresourcesgrpc.ErrorLimitExceeded) {
+				if errors.Is(err, apisgrpc.ErrorLimitExceeded) {
 					errLimitExceededCount++
 				}
 			}

@@ -94,7 +94,7 @@ type Driver interface {
 	// If selectedNode is set, the driver must attempt to allocate for that
 	// node. If that is not possible, it must return an error. The
 	// controller will call UnsuitableNodes and pass the new information to
-	// the scheduler, which then will lead to selecting a diffent node
+	// the scheduler, which then will lead to selecting a different node
 	// if the current one is not suitable.
 	//
 	// The Claim, ClaimParameters, Class, ClassParameters fields of "claims" parameter
@@ -121,6 +121,12 @@ type Driver interface {
 	// to mark nodes as unsuitable for all claims if it not all claims
 	// can be allocated for it (for example, two GPUs requested but
 	// the node only has one).
+	//
+	// The potentialNodes slice contains all potential nodes selected
+	// by the scheduler plus the selected node. The response must
+	// not contain any other nodes. Implementations do not have to
+	// care about size limits in the PodSchedulingContext status, the
+	// caller will handle that.
 	//
 	// The result of the check is in ClaimAllocation.UnsuitableNodes.
 	// An error indicates that the entire check must be repeated.
@@ -156,6 +162,7 @@ type controller struct {
 	driver              Driver
 	setReservedFor      bool
 	kubeClient          kubernetes.Interface
+	claimNameLookup     *resourceclaim.Lookup
 	queue               workqueue.RateLimitingInterface
 	eventRecorder       record.EventRecorder
 	rcLister            resourcev1alpha2listers.ResourceClassLister
@@ -180,6 +187,7 @@ func New(
 	rcInformer := informerFactory.Resource().V1alpha2().ResourceClasses()
 	claimInformer := informerFactory.Resource().V1alpha2().ResourceClaims()
 	schedulingCtxInformer := informerFactory.Resource().V1alpha2().PodSchedulingContexts()
+	claimNameLookup := resourceclaim.NewNameLookup(kubeClient)
 
 	eventBroadcaster := record.NewBroadcaster()
 	go func() {
@@ -218,6 +226,7 @@ func New(
 		driver:              driver,
 		setReservedFor:      true,
 		kubeClient:          kubeClient,
+		claimNameLookup:     claimNameLookup,
 		rcLister:            rcInformer.Lister(),
 		rcSynced:            rcInformer.Informer().HasSynced,
 		claimCache:          claimCache,
@@ -348,7 +357,6 @@ func (ctrl *controller) Run(workers int) {
 var errRequeue = errors.New("requeue")
 
 // errPeriodic is a special error instance that functions can return
-// to request silent instance that functions can return
 // to request silent retrying at a fixed rate.
 var errPeriodic = errors.New("periodic")
 
@@ -527,8 +535,9 @@ func (ctrl *controller) syncClaim(ctx context.Context, claim *resourcev1alpha2.R
 		return errRequeue
 	}
 
-	// Check parameters.
-	claimParameters, classParameters, err := ctrl.getParameters(ctx, claim, class)
+	// Check parameters. Do not record event to Claim if its parameters are invalid,
+	// syncKey will record the error.
+	claimParameters, classParameters, err := ctrl.getParameters(ctx, claim, class, false)
 	if err != nil {
 		return err
 	}
@@ -549,14 +558,18 @@ func (ctrl *controller) syncClaim(ctx context.Context, claim *resourcev1alpha2.R
 	return nil
 }
 
-func (ctrl *controller) getParameters(ctx context.Context, claim *resourcev1alpha2.ResourceClaim, class *resourcev1alpha2.ResourceClass) (claimParameters, classParameters interface{}, err error) {
+func (ctrl *controller) getParameters(ctx context.Context, claim *resourcev1alpha2.ResourceClaim, class *resourcev1alpha2.ResourceClass, notifyClaim bool) (claimParameters, classParameters interface{}, err error) {
 	classParameters, err = ctrl.driver.GetClassParameters(ctx, class)
 	if err != nil {
+		ctrl.eventRecorder.Event(class, v1.EventTypeWarning, "Failed", err.Error())
 		err = fmt.Errorf("class parameters %s: %v", class.ParametersRef, err)
 		return
 	}
 	claimParameters, err = ctrl.driver.GetClaimParameters(ctx, claim, class, classParameters)
 	if err != nil {
+		if notifyClaim {
+			ctrl.eventRecorder.Event(claim, v1.EventTypeWarning, "Failed", err.Error())
+		}
 		err = fmt.Errorf("claim parameters %s: %v", claim.Spec.ParametersRef, err)
 		return
 	}
@@ -645,7 +658,7 @@ func (ctrl *controller) allocateClaims(ctx context.Context, claims []*ClaimAlloc
 }
 
 func (ctrl *controller) checkPodClaim(ctx context.Context, pod *v1.Pod, podClaim v1.PodResourceClaim) (*ClaimAllocation, error) {
-	claimName, mustCheckOwner, err := resourceclaim.Name(pod, &podClaim)
+	claimName, mustCheckOwner, err := ctrl.claimNameLookup.Name(pod, &podClaim)
 	if err != nil {
 		return nil, err
 	}
@@ -667,6 +680,11 @@ func (ctrl *controller) checkPodClaim(ctx context.Context, pod *v1.Pod, podClaim
 		// Nothing to do for it as part of pod scheduling.
 		return nil, nil
 	}
+	if claim.Status.Allocation != nil {
+		// Already allocated, class and parameter are not needed and nothing
+		// need to be done for the claim either.
+		return nil, nil
+	}
 	class, err := ctrl.rcLister.Get(claim.Spec.ResourceClassName)
 	if err != nil {
 		return nil, err
@@ -674,9 +692,10 @@ func (ctrl *controller) checkPodClaim(ctx context.Context, pod *v1.Pod, podClaim
 	if class.DriverName != ctrl.name {
 		return nil, nil
 	}
-	// Check parameters.
-	claimParameters, classParameters, err := ctrl.getParameters(ctx, claim, class)
+	// Check parameters. Record event to claim and pod if parameters are invalid.
+	claimParameters, classParameters, err := ctrl.getParameters(ctx, claim, class, true)
 	if err != nil {
+		ctrl.eventRecorder.Event(pod, v1.EventTypeWarning, "Failed", fmt.Sprintf("claim %v: %v", claim.Name, err.Error()))
 		return nil, err
 	}
 	return &ClaimAllocation{
@@ -752,12 +771,20 @@ func (ctrl *controller) syncPodSchedulingContexts(ctx context.Context, schedulin
 	// and shouldn't, because those allocations might have to be undone to
 	// pick a better node. If we don't need to allocate now, then we'll
 	// simply report back the gather information.
+	//
+	// We shouldn't assume that the scheduler has included the selected node
+	// in the list of potential nodes. Usually it does, but let's make sure
+	// that we check it.
+	selectedNode := schedulingCtx.Spec.SelectedNode
+	potentialNodes := schedulingCtx.Spec.PotentialNodes
+	if selectedNode != "" && !hasString(potentialNodes, selectedNode) {
+		potentialNodes = append(potentialNodes, selectedNode)
+	}
 	if len(schedulingCtx.Spec.PotentialNodes) > 0 {
-		if err := ctrl.driver.UnsuitableNodes(ctx, pod, claims, schedulingCtx.Spec.PotentialNodes); err != nil {
+		if err := ctrl.driver.UnsuitableNodes(ctx, pod, claims, potentialNodes); err != nil {
 			return fmt.Errorf("checking potential nodes: %v", err)
 		}
 	}
-	selectedNode := schedulingCtx.Spec.SelectedNode
 	logger.V(5).Info("pending pod claims", "claims", claims, "selectedNode", selectedNode)
 	if selectedNode != "" {
 		unsuitable := false
@@ -811,12 +838,12 @@ func (ctrl *controller) syncPodSchedulingContexts(ctx context.Context, schedulin
 			schedulingCtx.Status.ResourceClaims = append(schedulingCtx.Status.ResourceClaims,
 				resourcev1alpha2.ResourceClaimSchedulingStatus{
 					Name:            delayed.PodClaimName,
-					UnsuitableNodes: delayed.UnsuitableNodes,
+					UnsuitableNodes: truncateNodes(delayed.UnsuitableNodes, selectedNode),
 				})
 			modified = true
 		} else if stringsDiffer(schedulingCtx.Status.ResourceClaims[i].UnsuitableNodes, delayed.UnsuitableNodes) {
 			// Update existing entry.
-			schedulingCtx.Status.ResourceClaims[i].UnsuitableNodes = delayed.UnsuitableNodes
+			schedulingCtx.Status.ResourceClaims[i].UnsuitableNodes = truncateNodes(delayed.UnsuitableNodes, selectedNode)
 			modified = true
 		}
 	}
@@ -830,6 +857,23 @@ func (ctrl *controller) syncPodSchedulingContexts(ctx context.Context, schedulin
 	// We must keep the object in our queue and keep updating the
 	// UnsuitableNodes fields.
 	return errPeriodic
+}
+
+func truncateNodes(nodes []string, selectedNode string) []string {
+	// We might have checked "potential nodes + selected node" above, so
+	// this list might be too long by one element. When truncating it, make
+	// sure that the selected node is listed.
+	lenUnsuitable := len(nodes)
+	if lenUnsuitable > resourcev1alpha2.PodSchedulingNodeListMaxSize {
+		if nodes[0] == selectedNode {
+			// Truncate at the end and keep selected node in the first element.
+			nodes = nodes[0 : lenUnsuitable-1]
+		} else {
+			// Truncate at the front, it's not the selected node.
+			nodes = nodes[1:lenUnsuitable]
+		}
+	}
+	return nodes
 }
 
 type claimAllocations []*ClaimAllocation

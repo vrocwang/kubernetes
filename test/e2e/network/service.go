@@ -772,7 +772,7 @@ var _ = common.SIGDescribe("Services", func() {
 		Testname: Kubernetes Service
 		Description: By default when a kubernetes cluster is running there MUST be a 'kubernetes' service running in the cluster.
 	*/
-	framework.ConformanceIt("should provide secure master service ", func(ctx context.Context) {
+	framework.ConformanceIt("should provide secure master service", func(ctx context.Context) {
 		_, err := cs.CoreV1().Services(metav1.NamespaceDefault).Get(ctx, "kubernetes", metav1.GetOptions{})
 		framework.ExpectNoError(err, "failed to fetch the service object for the service named kubernetes")
 	})
@@ -782,7 +782,7 @@ var _ = common.SIGDescribe("Services", func() {
 		Testname: Service, endpoints
 		Description: Create a service with a endpoint without any Pods, the service MUST run and show empty endpoints. Add a pod to the service and the service MUST validate to show all the endpoints for the ports exposed by the Pod. Add another Pod then the list of all Ports exposed by both the Pods MUST be valid and have corresponding service endpoint. Once the second Pod is deleted then set of endpoint MUST be validated to show only ports from the first container that are exposed. Once both pods are deleted the endpoints from the service MUST be empty.
 	*/
-	framework.ConformanceIt("should serve a basic endpoint from pods ", func(ctx context.Context) {
+	framework.ConformanceIt("should serve a basic endpoint from pods", func(ctx context.Context) {
 		serviceName := "endpoint-test2"
 		ns := f.Namespace.Name
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
@@ -843,7 +843,7 @@ var _ = common.SIGDescribe("Services", func() {
 		Testname: Service, endpoints with multiple ports
 		Description: Create a service with two ports but no Pods are added to the service yet.  The service MUST run and show empty set of endpoints. Add a Pod to the first port, service MUST list one endpoint for the Pod on that port. Add another Pod to the second port, service MUST list both the endpoints. Delete the first Pod and the service MUST list only the endpoint to the second Pod. Delete the second Pod and the service must now have empty set of endpoints.
 	*/
-	framework.ConformanceIt("should serve multiport endpoints from pods ", func(ctx context.Context) {
+	framework.ConformanceIt("should serve multiport endpoints from pods", func(ctx context.Context) {
 		// repacking functionality is intentionally not tested here - it's better to test it in an integration test.
 		serviceName := "multi-endpoint-test"
 		ns := f.Namespace.Name
@@ -1822,7 +1822,7 @@ var _ = common.SIGDescribe("Services", func() {
 		execPodName := execPod.Name
 		cmd := fmt.Sprintf("curl -q -s --connect-timeout 2 http://%s:%d/", svcName, port)
 		var stdout string
-		if pollErr := wait.PollImmediateWithContext(ctx, framework.Poll, e2eservice.KubeProxyLagTimeout, func(ctx context.Context) (bool, error) {
+		if pollErr := wait.PollUntilContextTimeout(ctx, framework.Poll, e2eservice.KubeProxyLagTimeout, true, func(ctx context.Context) (bool, error) {
 			var err error
 			stdout, err = e2eoutput.RunHostCmd(f.Namespace.Name, execPodName, cmd)
 			if err != nil {
@@ -2118,23 +2118,35 @@ var _ = common.SIGDescribe("Services", func() {
 		if err != nil {
 			framework.Failf("error waiting for pod %s to be unready %v", webserverPod0.Name, err)
 		}
-		// Wait the change has been propagated and the service start to fail
-		clusterIPAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
-		cmd := fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, clusterIPAddress)
-		if pollErr := wait.PollImmediate(framework.Poll, e2eservice.KubeProxyEndpointLagTimeout, func() (bool, error) {
+
+		nodeIPs0 := e2enode.GetAddresses(&node0, v1.NodeInternalIP)
+		nodeIPs1 := e2enode.GetAddresses(&node1, v1.NodeInternalIP)
+		nodePortAddress0 := net.JoinHostPort(nodeIPs0[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
+		nodePortAddress1 := net.JoinHostPort(nodeIPs1[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
+
+		// Wait until the change has been propagated to both nodes.
+		cmd := fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, nodePortAddress0)
+		if pollErr := wait.PollUntilContextTimeout(ctx, framework.Poll, e2eservice.KubeProxyEndpointLagTimeout, true, func(_ context.Context) (bool, error) {
 			_, err := e2eoutput.RunHostCmd(pausePod1.Namespace, pausePod1.Name, cmd)
 			if err != nil {
 				return true, nil
 			}
 			return false, nil
 		}); pollErr != nil {
-			framework.ExpectNoError(pollErr, "service still serves traffic")
+			framework.ExpectNoError(pollErr, "pod on node0 still serves traffic")
+		}
+		cmd = fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, nodePortAddress1)
+		if pollErr := wait.PollUntilContextTimeout(ctx, framework.Poll, e2eservice.KubeProxyEndpointLagTimeout, true, func(_ context.Context) (bool, error) {
+			_, err := e2eoutput.RunHostCmd(pausePod1.Namespace, pausePod1.Name, cmd)
+			if err != nil {
+				return true, nil
+			}
+			return false, nil
+		}); pollErr != nil {
+			framework.ExpectNoError(pollErr, "pod on node1 still serves traffic")
 		}
 
-		nodeIPs0 := e2enode.GetAddresses(&node0, v1.NodeInternalIP)
-		nodeIPs1 := e2enode.GetAddresses(&node1, v1.NodeInternalIP)
-		nodePortAddress0 := net.JoinHostPort(nodeIPs0[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
-		nodePortAddress1 := net.JoinHostPort(nodeIPs1[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
+		clusterIPAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
 		// connect 3 times every 5 seconds to the Service and expect a failure
 		for i := 0; i < 5; i++ {
 			cmd = fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, clusterIPAddress)

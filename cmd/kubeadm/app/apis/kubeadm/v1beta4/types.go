@@ -122,6 +122,9 @@ type ClusterConfiguration struct {
 	// +optional
 	DNS DNS `json:"dns,omitempty"`
 
+	// Proxy defines the options for the proxy add-on installed in the cluster.
+	Proxy Proxy `json:"proxy,omitempty"`
+
 	// CertificatesDir specifies where to store or look for all required certificates.
 	// +optional
 	CertificatesDir string `json:"certificatesDir,omitempty"`
@@ -140,6 +143,11 @@ type ClusterConfiguration struct {
 	// The cluster name
 	// +optional
 	ClusterName string `json:"clusterName,omitempty"`
+
+	// EncryptionAlgorithm holds the type of asymmetric encryption algorithm used for keys and certificates.
+	// Can be "RSA" (default algorithm, key size is 2048) or "ECDSA" (uses the P-256 elliptic curve).
+	// +optional
+	EncryptionAlgorithm EncryptionAlgorithmType `json:"encryptionAlgorithm,omitempty"`
 }
 
 // ControlPlaneComponent holds settings common to control plane component of the cluster
@@ -174,13 +182,21 @@ type APIServer struct {
 	TimeoutForControlPlane *metav1.Duration `json:"timeoutForControlPlane,omitempty"`
 }
 
-// DNSAddOnType defines string identifying DNS add-on types
-type DNSAddOnType string
-
 // DNS defines the DNS addon that should be used in the cluster
 type DNS struct {
-	// ImageMeta allows to customize the image used for the DNS component
+	// ImageMeta allows to customize the image used for the DNS addon
 	ImageMeta `json:",inline"`
+
+	// Disabled specifies whether to disable this addon in the cluster
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
+}
+
+// Proxy defines the proxy addon that should be used in the cluster
+type Proxy struct {
+	// Disabled specifies whether to disable this addon in the cluster
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // ImageMeta allows to customize the image used for components that are not
@@ -513,3 +529,13 @@ type Arg struct {
 type EnvVar struct {
 	corev1.EnvVar `json:",inline"`
 }
+
+// EncryptionAlgorithmType can define an asymmetric encryption algorithm type.
+type EncryptionAlgorithmType string
+
+const (
+	// EncryptionAlgorithmECDSA defines the ECDSA encryption algorithm type.
+	EncryptionAlgorithmECDSA EncryptionAlgorithmType = "ECDSA"
+	// EncryptionAlgorithmRSA defines the RSA encryption algorithm type.
+	EncryptionAlgorithmRSA EncryptionAlgorithmType = "RSA"
+)

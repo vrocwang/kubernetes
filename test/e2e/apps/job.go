@@ -19,7 +19,6 @@ package apps
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -51,6 +50,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/scheduling"
 	admissionapi "k8s.io/pod-security-admission/api"
 	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -99,7 +99,7 @@ var _ = SIGDescribe("Job", func() {
 				successes++
 			}
 		}
-		framework.ExpectEqual(successes, completions, "expected %d successful job pods, but got  %d", completions, successes)
+		gomega.Expect(successes).To(gomega.Equal(completions), "expected %d successful job pods, but got  %d", completions, successes)
 	})
 
 	ginkgo.It("should allow to use the pod failure policy on exit code to fail the job early", func(ctx context.Context) {
@@ -216,7 +216,7 @@ var _ = SIGDescribe("Job", func() {
 
 			pods, err := e2ejob.GetAllRunningJobPods(ctx, f.ClientSet, f.Namespace.Name, job.Name)
 			framework.ExpectNoError(err, "failed to get running pods for the job: %s/%s", job.Name, job.Namespace)
-			framework.ExpectEqual(len(pods), 1, "Exactly one running pod is expected")
+			gomega.Expect(pods).To(gomega.HaveLen(1), "Exactly one running pod is expected")
 			pod := pods[0]
 			ginkgo.By(fmt.Sprintf("Evicting the running pod: %s/%s", pod.Name, pod.Namespace))
 			evictTarget := &policyv1.Eviction{
@@ -262,7 +262,7 @@ var _ = SIGDescribe("Job", func() {
 			Rules: []batchv1.PodFailurePolicyRule{
 				{
 					// Ignore failures of the non 0-indexed pods which fail until the marker file is created
-					// And the 127 in the 0-indexed pod due to eviction.
+					// And the 137 in the 0-indexed pod due to eviction.
 					Action: batchv1.PodFailurePolicyActionIgnore,
 					OnExitCodes: &batchv1.PodFailurePolicyOnExitCodesRequirement{
 						Operator: batchv1.PodFailurePolicyOnExitCodesOpIn,
@@ -280,30 +280,18 @@ var _ = SIGDescribe("Job", func() {
 		job, err := e2ejob.CreateJob(ctx, f.ClientSet, f.Namespace.Name, job)
 		framework.ExpectNoError(err, "failed to create job in namespace: %s", f.Namespace.Name)
 
-		ginkgo.By("Ensuring pods aren't created for job")
-		framework.ExpectEqual(wait.Poll(framework.Poll, wait.ForeverTestTimeout, func() (bool, error) {
-			pods, err := e2ejob.GetJobPods(ctx, f.ClientSet, f.Namespace.Name, job.Name)
-			if err != nil {
-				return false, err
-			}
-			return len(pods.Items) > 0, nil
-		}), wait.ErrorInterrupted(errors.New("timed out waiting for the condition")))
-
 		ginkgo.By("Checking Job status to observe Suspended state")
-		job, err = e2ejob.GetJob(ctx, f.ClientSet, f.Namespace.Name, job.Name)
-		framework.ExpectNoError(err, "failed to retrieve latest job object")
-		exists := false
-		for _, c := range job.Status.Conditions {
-			if c.Type == batchv1.JobSuspended {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			framework.Failf("Job was expected to be completed or failed")
-		}
+		err = e2ejob.WaitForJobSuspend(ctx, f.ClientSet, f.Namespace.Name, job.Name)
+		framework.ExpectNoError(err, "failed to observe suspend state: %s", f.Namespace.Name)
+
+		ginkgo.By("Ensuring pods aren't created for job")
+		pods, err := e2ejob.GetJobPods(ctx, f.ClientSet, f.Namespace.Name, job.Name)
+		framework.ExpectNoError(err, "failed to list pod for a given job %s in namespace %s", job.Name, f.Namespace.Name)
+		gomega.Expect(pods.Items).To(gomega.BeEmpty())
 
 		ginkgo.By("Updating the job with suspend=false")
+		job, err = f.ClientSet.BatchV1().Jobs(f.Namespace.Name).Get(ctx, job.Name, metav1.GetOptions{})
+		framework.ExpectNoError(err, "failed to get job in namespace: %s", f.Namespace.Name)
 		job.Spec.Suspend = pointer.BoolPtr(false)
 		job, err = e2ejob.UpdateJob(ctx, f.ClientSet, f.Namespace.Name, job)
 		framework.ExpectNoError(err, "failed to update job in namespace: %s", f.Namespace.Name)
@@ -325,21 +313,15 @@ var _ = SIGDescribe("Job", func() {
 		framework.ExpectNoError(err, "failed to ensure number of pods associated with job %s is equal to parallelism count in namespace: %s", job.Name, f.Namespace.Name)
 
 		ginkgo.By("Updating the job with suspend=true")
-		err = wait.PollImmediate(framework.Poll, framework.SingleCallTimeout, func() (bool, error) {
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			job, err = e2ejob.GetJob(ctx, f.ClientSet, f.Namespace.Name, job.Name)
-			if err != nil {
-				return false, err
-			}
+			framework.ExpectNoError(err, "unable to get job %s in namespace %s", job.Name, f.Namespace.Name)
 			job.Spec.Suspend = pointer.Bool(true)
 			updatedJob, err := e2ejob.UpdateJob(ctx, f.ClientSet, f.Namespace.Name, job)
 			if err == nil {
 				job = updatedJob
-				return true, nil
 			}
-			if apierrors.IsConflict(err) {
-				return false, nil
-			}
-			return false, err
+			return err
 		})
 		framework.ExpectNoError(err, "failed to update job in namespace: %s", f.Namespace.Name)
 
@@ -360,6 +342,61 @@ var _ = SIGDescribe("Job", func() {
 		if !exists {
 			framework.Failf("Job was expected to be completed or failed")
 		}
+	})
+
+	ginkgo.It("should recreate pods only after they have failed if pod replacement policy is set to Failed", func(ctx context.Context) {
+		ginkgo.By("Creating a job")
+		job := e2ejob.NewTestJob("", "pod-recreate-failed", v1.RestartPolicyNever, 1, 1, nil, 1)
+		job.Spec.PodReplacementPolicy = ptr.To(batchv1.Failed)
+		job.Spec.Template.Spec.Containers[0].Command = []string{"/bin/sh", "-c", `_term(){
+	sleep 5
+	exit 143
+}
+trap _term SIGTERM
+while true; do
+	sleep 1
+done`}
+		job, err := e2ejob.CreateJob(ctx, f.ClientSet, f.Namespace.Name, job)
+		framework.ExpectNoError(err, "failed to create job in namespace: %s", f.Namespace.Name)
+
+		err = e2ejob.WaitForJobPodsRunning(ctx, f.ClientSet, f.Namespace.Name, job.Name, 1)
+		framework.ExpectNoError(err, "failed to wait for job pod to become running in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Deleting job pod")
+		pods, err := e2ejob.GetJobPods(ctx, f.ClientSet, f.Namespace.Name, job.Name)
+		framework.ExpectNoError(err, "failed to get pod list for job %s in namespace: %s", job.Name, f.Namespace.Name)
+
+		framework.ExpectNoError(e2epod.DeletePodsWithGracePeriod(ctx, f.ClientSet, pods.Items, 30), "failed to delete pods in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Ensuring pod does not get recreated while it is in terminating state")
+		err = e2ejob.WaitForJobState(ctx, f.ClientSet, f.Namespace.Name, job.Name, f.Timeouts.PodDelete, func(job *batchv1.Job) string {
+			if job.Status.Active == 0 && job.Status.Failed == 0 && *job.Status.Terminating == 1 {
+				return ""
+			} else {
+				return fmt.Sprintf(
+					"expected job to have 0 active pod, 0 failed pod and 1 terminating pods, but got %d active pods, %d failed pods and %d terminating pods",
+					job.Status.Active,
+					job.Status.Failed,
+					*job.Status.Terminating,
+				)
+			}
+		})
+		framework.ExpectNoError(err, "failed to ensure pod is not recreated while it is in terminating state")
+
+		ginkgo.By("Ensuring pod gets recreated after it has failed")
+		err = e2ejob.WaitForJobState(ctx, f.ClientSet, f.Namespace.Name, job.Name, f.Timeouts.PodDelete, func(job *batchv1.Job) string {
+			if job.Status.Active == 1 && job.Status.Failed == 1 && *job.Status.Terminating == 0 {
+				return ""
+			} else {
+				return fmt.Sprintf(
+					"expected job to have 1 active pods, 1 failed pods and 0 terminating pod, but got %d active pods, %d failed pods and %d terminating pods",
+					job.Status.Active,
+					job.Status.Failed,
+					*job.Status.Terminating,
+				)
+			}
+		})
+		framework.ExpectNoError(err, "failed to wait for pod to get recreated")
 	})
 
 	/*
@@ -390,12 +427,42 @@ var _ = SIGDescribe("Job", func() {
 				framework.ExpectNoError(err, "failed obtaining completion index from pod in namespace: %s", f.Namespace.Name)
 				succeededIndexes.Insert(ix)
 				expectedName := fmt.Sprintf("%s-%d", job.Name, ix)
-				framework.ExpectEqual(pod.Spec.Hostname, expectedName, "expected completed pod with hostname %s, but got %s", expectedName, pod.Spec.Hostname)
+				gomega.Expect(pod.Spec.Hostname).To(gomega.Equal(expectedName), "expected completed pod with hostname %s, but got %s", expectedName, pod.Spec.Hostname)
 			}
 		}
 		gotIndexes := succeededIndexes.List()
 		wantIndexes := []int{0, 1, 2, 3}
-		framework.ExpectEqual(gotIndexes, wantIndexes, "expected completed indexes %s, but got %s", wantIndexes, gotIndexes)
+		gomega.Expect(gotIndexes).To(gomega.Equal(wantIndexes), "expected completed indexes %s, but got %s", wantIndexes, gotIndexes)
+	})
+
+	/*
+		Testcase: Ensure that all indexes are executed for an indexed job with backoffLimitPerIndex despite some failing
+		Description: Create an indexed job and ensure that all indexes are either failed or succeeded, depending
+		on the end state of the corresponding pods. Pods with odd indexes fail, while the pods with even indexes
+		succeeded. Also, verify that the number of failed pods doubles the number of failing indexes, as the
+		backoffLimitPerIndex=1, allowing for one pod recreation before marking that indexed failed.
+	*/
+	ginkgo.It("should execute all indexes despite some failing when using backoffLimitPerIndex", func(ctx context.Context) {
+		ginkgo.By("Creating an indexed job with backoffLimit per index and failing pods")
+		job := e2ejob.NewTestJob("failOddSucceedEven", "with-backoff-limit-per-index", v1.RestartPolicyNever, parallelism, completions, nil, backoffLimit)
+		job.Spec.BackoffLimit = nil
+		job.Spec.BackoffLimitPerIndex = ptr.To[int32](1)
+		mode := batchv1.IndexedCompletion
+		job.Spec.CompletionMode = &mode
+		job, err := e2ejob.CreateJob(ctx, f.ClientSet, f.Namespace.Name, job)
+		framework.ExpectNoError(err, "failed to create job in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Awaiting for the job to fail as there are failed indexes")
+		err = e2ejob.WaitForJobFailed(f.ClientSet, f.Namespace.Name, job.Name)
+		framework.ExpectNoError(err, "failed to ensure job completion in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Verifying the Job status fields to ensure all indexes were executed")
+		job, err = e2ejob.GetJob(ctx, f.ClientSet, f.Namespace.Name, job.Name)
+		framework.ExpectNoError(err, "failed to retrieve latest job object")
+		gomega.Expect(job.Status.FailedIndexes).Should(gomega.HaveValue(gomega.Equal("1,3")))
+		gomega.Expect(job.Status.CompletedIndexes).Should(gomega.Equal("0,2"))
+		gomega.Expect(job.Status.Failed).Should(gomega.Equal(int32(4)))
+		gomega.Expect(job.Status.Succeeded).Should(gomega.Equal(int32(2)))
 	})
 
 	/*
@@ -581,7 +648,7 @@ var _ = SIGDescribe("Job", func() {
 		framework.ExpectNoError(err, "failed to get PodList for job %s in namespace: %s", job.Name, f.Namespace.Name)
 		gomega.Expect(pods.Items).To(gomega.HaveLen(backoff + 1))
 		for _, pod := range pods.Items {
-			framework.ExpectEqual(pod.Status.Phase, v1.PodFailed)
+			gomega.Expect(pod.Status.Phase).To(gomega.Equal(v1.PodFailed))
 		}
 	})
 
@@ -628,7 +695,7 @@ var _ = SIGDescribe("Job", func() {
 				successes++
 			}
 		}
-		framework.ExpectEqual(successes, largeCompletions, "expected %d successful job pods, but got  %d", largeCompletions, successes)
+		gomega.Expect(successes).To(gomega.Equal(largeCompletions), "expected %d successful job pods, but got  %d", largeCompletions, successes)
 	})
 
 	/*
@@ -671,7 +738,7 @@ var _ = SIGDescribe("Job", func() {
 		if !patchedStatus.Status.StartTime.Equal(&now1) {
 			framework.Failf("patched object should have the applied StartTime %#v, got %#v instead", jStatus.StartTime, patchedStatus.Status.StartTime)
 		}
-		framework.ExpectEqual(patchedStatus.Annotations["patchedstatus"], "true", "patched object should have the applied annotation")
+		gomega.Expect(patchedStatus.Annotations).To(gomega.HaveKeyWithValue("patchedstatus", "true"), "patched object should have the applied annotation")
 
 		ginkgo.By("updating /status")
 		// we need to use RFC3339 version since conversion over the wire cuts nanoseconds
@@ -697,7 +764,7 @@ var _ = SIGDescribe("Job", func() {
 		framework.ExpectNoError(err)
 		statusUID, _, err := unstructured.NestedFieldCopy(gottenStatus.Object, "metadata", "uid")
 		framework.ExpectNoError(err)
-		framework.ExpectEqual(string(job.UID), statusUID, fmt.Sprintf("job.UID: %v expected to match statusUID: %v ", job.UID, statusUID))
+		gomega.Expect(string(job.UID)).To(gomega.Equal(statusUID), fmt.Sprintf("job.UID: %v expected to match statusUID: %v ", job.UID, statusUID))
 	})
 
 	/*
@@ -753,7 +820,7 @@ var _ = SIGDescribe("Job", func() {
 			updatedValue:        "patched",
 		}
 		waitForJobEvent(ctx, c)
-		framework.ExpectEqual(patchedJob.Labels[jobName], "patched", "Did not find job label for this job. Current labels: %v", patchedJob.Labels)
+		gomega.Expect(patchedJob.Labels).To(gomega.HaveKeyWithValue(jobName, "patched"), "Did not find job label for this job. Current labels: %v", patchedJob.Labels)
 
 		ginkgo.By("Updating the job")
 		var updatedJob *batchv1.Job
@@ -784,13 +851,13 @@ var _ = SIGDescribe("Job", func() {
 			updatedValue:        "true",
 		}
 		waitForJobEvent(ctx, c)
-		framework.ExpectEqual(updatedJob.Annotations["updated"], "true", "updated Job should have the applied annotation")
+		gomega.Expect(updatedJob.Annotations).To(gomega.HaveKeyWithValue("updated", "true"), "updated Job should have the applied annotation")
 		framework.Logf("Found Job annotations: %#v", patchedJob.Annotations)
 
 		ginkgo.By("Listing all Jobs with LabelSelector")
 		jobs, err := f.ClientSet.BatchV1().Jobs("").List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 		framework.ExpectNoError(err, "Failed to list job. %v", err)
-		framework.ExpectEqual(len(jobs.Items), 1, "Failed to find job %v", jobName)
+		gomega.Expect(jobs.Items).To(gomega.HaveLen(1), "Failed to find job %v", jobName)
 		testJob := jobs.Items[0]
 		framework.Logf("Job: %v as labels: %v", testJob.Name, testJob.Labels)
 
@@ -820,10 +887,47 @@ var _ = SIGDescribe("Job", func() {
 		ginkgo.By("Relist jobs to confirm deletion")
 		jobs, err = f.ClientSet.BatchV1().Jobs("").List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 		framework.ExpectNoError(err, "Failed to list job. %v", err)
-		framework.ExpectEqual(len(jobs.Items), 0, "Found job %v", jobName)
+		gomega.Expect(jobs.Items).To(gomega.BeEmpty(), "Found job %v", jobName)
 	})
 
+	ginkgo.It("should update the status ready field", func(ctx context.Context) {
+		ginkgo.By("Creating a job with suspend=true")
+		job := e2ejob.NewTestJob("notTerminate", "all-ready", v1.RestartPolicyNever, parallelism, completions, nil, backoffLimit)
+		job.Spec.Suspend = ptr.To[bool](true)
+		job, err := e2ejob.CreateJob(ctx, f.ClientSet, f.Namespace.Name, job)
+		framework.ExpectNoError(err, "failed to create job in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Ensure the job controller updates the status.ready field")
+		err = e2ejob.WaitForJobReady(ctx, f.ClientSet, f.Namespace.Name, job.Name, ptr.To[int32](0))
+		framework.ExpectNoError(err, "failed to ensure job status ready field in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Updating the job with suspend=false")
+		err = updateJobSuspendWithRetries(ctx, f, job, ptr.To[bool](false))
+		framework.ExpectNoError(err, "failed to update job in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Ensure the job controller updates the status.ready field")
+		err = e2ejob.WaitForJobReady(ctx, f.ClientSet, f.Namespace.Name, job.Name, &parallelism)
+		framework.ExpectNoError(err, "failed to ensure job status ready field in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Updating the job with suspend=true")
+		err = updateJobSuspendWithRetries(ctx, f, job, ptr.To[bool](true))
+		framework.ExpectNoError(err, "failed to update job in namespace: %s", f.Namespace.Name)
+
+		ginkgo.By("Ensure the job controller updates the status.ready field")
+		err = e2ejob.WaitForJobReady(ctx, f.ClientSet, f.Namespace.Name, job.Name, ptr.To[int32](0))
+		framework.ExpectNoError(err, "failed to ensure job status ready field in namespace: %s", f.Namespace.Name)
+	})
 })
+
+func updateJobSuspendWithRetries(ctx context.Context, f *framework.Framework, job *batchv1.Job, suspend *bool) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		job, err := e2ejob.GetJob(ctx, f.ClientSet, f.Namespace.Name, job.Name)
+		framework.ExpectNoError(err, "unable to get job %s in namespace %s", job.Name, f.Namespace.Name)
+		job.Spec.Suspend = suspend
+		_, err = e2ejob.UpdateJob(ctx, f.ClientSet, f.Namespace.Name, job)
+		return err
+	})
+}
 
 // waitForJobEvent is used to track and log Job events.
 // As delivery of events is not actually guaranteed we

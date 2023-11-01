@@ -368,7 +368,9 @@ var _ = SIGDescribe("PriorityMemoryEvictionOrdering [Slow] [Serial] [Disruptive]
 		})
 		ginkgo.BeforeEach(func(ctx context.Context) {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(ctx, &schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: highPriorityClassName}, Value: highPriority}, metav1.CreateOptions{})
-			framework.ExpectEqual(err == nil || apierrors.IsAlreadyExists(err), true)
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				framework.ExpectNoError(err, "failed to create priority class")
+			}
 		})
 		ginkgo.AfterEach(func(ctx context.Context) {
 			err := f.ClientSet.SchedulingV1().PriorityClasses().Delete(ctx, highPriorityClassName, metav1.DeleteOptions{})
@@ -426,7 +428,9 @@ var _ = SIGDescribe("PriorityLocalStorageEvictionOrdering [Slow] [Serial] [Disru
 		})
 		ginkgo.BeforeEach(func(ctx context.Context) {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(ctx, &schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: highPriorityClassName}, Value: highPriority}, metav1.CreateOptions{})
-			framework.ExpectEqual(err == nil || apierrors.IsAlreadyExists(err), true)
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				framework.ExpectNoError(err, "failed to create priority class")
+			}
 		})
 		ginkgo.AfterEach(func(ctx context.Context) {
 			err := f.ClientSet.SchedulingV1().PriorityClasses().Delete(ctx, highPriorityClassName, metav1.DeleteOptions{})
@@ -463,7 +467,7 @@ var _ = SIGDescribe("PriorityLocalStorageEvictionOrdering [Slow] [Serial] [Disru
 var _ = SIGDescribe("PriorityPidEvictionOrdering [Slow] [Serial] [Disruptive][NodeFeature:Eviction]", func() {
 	f := framework.NewDefaultFramework("pidpressure-eviction-test")
 	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
-	pressureTimeout := 3 * time.Minute
+	pressureTimeout := 10 * time.Minute
 	expectedNodeCondition := v1.NodePIDPressure
 	expectedStarvedResource := noStarvedResource
 
@@ -480,7 +484,9 @@ var _ = SIGDescribe("PriorityPidEvictionOrdering [Slow] [Serial] [Disruptive][No
 		})
 		ginkgo.BeforeEach(func(ctx context.Context) {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(ctx, &schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: highPriorityClassName}, Value: highPriority}, metav1.CreateOptions{})
-			framework.ExpectEqual(err == nil || apierrors.IsAlreadyExists(err), true)
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				framework.ExpectNoError(err, "failed to create priority class")
+			}
 		})
 		ginkgo.AfterEach(func(ctx context.Context) {
 			err := f.ClientSet.SchedulingV1().PriorityClasses().Delete(ctx, highPriorityClassName, metav1.DeleteOptions{})
@@ -711,7 +717,8 @@ func verifyEvictionOrdering(ctx context.Context, f *framework.Framework, testSpe
 			}
 		}
 		gomega.Expect(priorityPod).NotTo(gomega.BeNil())
-		gomega.Expect(priorityPod.Status.Phase).ToNot(gomega.Equal(v1.PodSucceeded), "pod: %s succeeded unexpectedly", priorityPod.Name)
+		gomega.Expect(priorityPod.Status.Phase).ToNot(gomega.Equal(v1.PodSucceeded),
+			fmt.Sprintf("pod: %s succeeded unexpectedly", priorityPod.Name))
 
 		// Check eviction ordering.
 		// Note: it is alright for a priority 1 and priority 2 pod (for example) to fail in the same round,
@@ -725,19 +732,21 @@ func verifyEvictionOrdering(ctx context.Context, f *framework.Framework, testSpe
 			}
 			gomega.Expect(lowPriorityPod).NotTo(gomega.BeNil())
 			if priorityPodSpec.evictionPriority < lowPriorityPodSpec.evictionPriority && lowPriorityPod.Status.Phase == v1.PodRunning {
-				gomega.Expect(priorityPod.Status.Phase).ToNot(gomega.Equal(v1.PodFailed), "priority %d pod: %s failed before priority %d pod: %s",
-					priorityPodSpec.evictionPriority, priorityPodSpec.pod.Name, lowPriorityPodSpec.evictionPriority, lowPriorityPodSpec.pod.Name)
+				gomega.Expect(priorityPod.Status.Phase).ToNot(gomega.Equal(v1.PodFailed),
+					fmt.Sprintf("priority %d pod: %s failed before priority %d pod: %s",
+						priorityPodSpec.evictionPriority, priorityPodSpec.pod.Name, lowPriorityPodSpec.evictionPriority, lowPriorityPodSpec.pod.Name))
 			}
 		}
 
 		if priorityPod.Status.Phase == v1.PodFailed {
-			framework.ExpectEqual(priorityPod.Status.Reason, eviction.Reason, "pod %s failed; expected Status.Reason to be %s, but got %s",
+			gomega.Expect(priorityPod.Status.Reason).To(gomega.Equal(eviction.Reason), "pod %s failed; expected Status.Reason to be %s, but got %s",
 				priorityPod.Name, eviction.Reason, priorityPod.Status.Reason)
 		}
 
 		// EvictionPriority 0 pods should not fail
 		if priorityPodSpec.evictionPriority == 0 {
-			gomega.Expect(priorityPod.Status.Phase).ToNot(gomega.Equal(v1.PodFailed), "priority 0 pod: %s failed", priorityPod.Name)
+			gomega.Expect(priorityPod.Status.Phase).ToNot(gomega.Equal(v1.PodFailed),
+				fmt.Sprintf("priority 0 pod: %s failed", priorityPod.Name))
 		}
 
 		// If a pod that is not evictionPriority 0 has not been evicted, we are not done
@@ -779,41 +788,47 @@ func verifyEvictionEvents(ctx context.Context, f *framework.Framework, testSpecs
 			}.AsSelector().String()
 			podEvictEvents, err := f.ClientSet.CoreV1().Events(f.Namespace.Name).List(ctx, metav1.ListOptions{FieldSelector: selector})
 			framework.ExpectNoError(err, "getting events")
-			framework.ExpectEqual(len(podEvictEvents.Items), 1, "Expected to find 1 eviction event for pod %s, got %d", pod.Name, len(podEvictEvents.Items))
+			gomega.Expect(podEvictEvents.Items).To(gomega.HaveLen(1), "Expected to find 1 eviction event for pod %s, got %d", pod.Name, len(podEvictEvents.Items))
 			event := podEvictEvents.Items[0]
 
 			if expectedStarvedResource != noStarvedResource {
 				// Check the eviction.StarvedResourceKey
 				starved, found := event.Annotations[eviction.StarvedResourceKey]
-				framework.ExpectEqual(found, true, "Expected to find an annotation on the eviction event for pod %s containing the starved resource %s, but it was not found",
-					pod.Name, expectedStarvedResource)
+				if !found {
+					framework.Failf("Expected to find an annotation on the eviction event for pod %s containing the starved resource %s, but it was not found",
+						pod.Name, expectedStarvedResource)
+				}
 				starvedResource := v1.ResourceName(starved)
-				framework.ExpectEqual(starvedResource, expectedStarvedResource, "Expected to the starved_resource annotation on pod %s to contain %s, but got %s instead",
+				gomega.Expect(starvedResource).To(gomega.Equal(expectedStarvedResource), "Expected to the starved_resource annotation on pod %s to contain %s, but got %s instead",
 					pod.Name, expectedStarvedResource, starvedResource)
 
 				// We only check these keys for memory, because ephemeral storage evictions may be due to volume usage, in which case these values are not present
 				if expectedStarvedResource == v1.ResourceMemory {
 					// Check the eviction.OffendingContainersKey
 					offendersString, found := event.Annotations[eviction.OffendingContainersKey]
-					framework.ExpectEqual(found, true, "Expected to find an annotation on the eviction event for pod %s containing the offending containers, but it was not found",
-						pod.Name)
+					if !found {
+						framework.Failf("Expected to find an annotation on the eviction event for pod %s containing the offending containers, but it was not found",
+							pod.Name)
+					}
 					offendingContainers := strings.Split(offendersString, ",")
-					framework.ExpectEqual(len(offendingContainers), 1, "Expected to find the offending container's usage in the %s annotation, but no container was found",
+					gomega.Expect(offendingContainers).To(gomega.HaveLen(1), "Expected to find the offending container's usage in the %s annotation, but no container was found",
 						eviction.OffendingContainersKey)
-					framework.ExpectEqual(offendingContainers[0], pod.Spec.Containers[0].Name, "Expected to find the offending container: %s's usage in the %s annotation, but found %s instead",
+					gomega.Expect(offendingContainers[0]).To(gomega.Equal(pod.Spec.Containers[0].Name), "Expected to find the offending container: %s's usage in the %s annotation, but found %s instead",
 						pod.Spec.Containers[0].Name, eviction.OffendingContainersKey, offendingContainers[0])
 
 					// Check the eviction.OffendingContainersUsageKey
 					offendingUsageString, found := event.Annotations[eviction.OffendingContainersUsageKey]
-					framework.ExpectEqual(found, true, "Expected to find an annotation on the eviction event for pod %s containing the offending containers' usage, but it was not found",
-						pod.Name)
+					if !found {
+						framework.Failf("Expected to find an annotation on the eviction event for pod %s containing the offending containers' usage, but it was not found",
+							pod.Name)
+					}
 					offendingContainersUsage := strings.Split(offendingUsageString, ",")
-					framework.ExpectEqual(len(offendingContainersUsage), 1, "Expected to find the offending container's usage in the %s annotation, but found %+v",
+					gomega.Expect(offendingContainersUsage).To(gomega.HaveLen(1), "Expected to find the offending container's usage in the %s annotation, but found %+v",
 						eviction.OffendingContainersUsageKey, offendingContainersUsage)
 					usageQuantity, err := resource.ParseQuantity(offendingContainersUsage[0])
 					framework.ExpectNoError(err, "parsing pod %s's %s annotation as a quantity", pod.Name, eviction.OffendingContainersUsageKey)
 					request := pod.Spec.Containers[0].Resources.Requests[starvedResource]
-					framework.ExpectEqual(usageQuantity.Cmp(request), 1, "Expected usage of offending container: %s in pod %s to exceed its request %s",
+					gomega.Expect(usageQuantity.Cmp(request)).To(gomega.Equal(1), "Expected usage of offending container: %s in pod %s to exceed its request %s",
 						usageQuantity.String(), pod.Name, request.String())
 				}
 			}
@@ -935,10 +950,15 @@ func eventuallyGetSummary(ctx context.Context) (s *kubeletstatsv1alpha1.Summary)
 
 // returns a pod that does not use any resources
 func innocentPod() *v1.Pod {
+	// Due to https://github.com/kubernetes/kubernetes/issues/115819,
+	// When evictionHard to used, we were setting grace period to 0 which meant the default setting (30 seconds)
+	// This could help with flakiness as we should send sigterm right away.
+	var gracePeriod int64 = 1
 	return &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "innocent-pod"},
 		Spec: v1.PodSpec{
-			RestartPolicy: v1.RestartPolicyNever,
+			RestartPolicy:                 v1.RestartPolicyNever,
+			TerminationGracePeriodSeconds: &gracePeriod,
 			Containers: []v1.Container{
 				{
 					Image: busyboxImage,
@@ -984,6 +1004,10 @@ func pidConsumingPod(name string, numProcesses int) *v1.Pod {
 
 // podWithCommand returns a pod with the provided volumeSource and resourceRequirements.
 func podWithCommand(volumeSource *v1.VolumeSource, resources v1.ResourceRequirements, iterations int, name, command string) *v1.Pod {
+	// Due to https://github.com/kubernetes/kubernetes/issues/115819,
+	// When evictionHard to used, we were setting grace period to 0 which meant the default setting (30 seconds)
+	// This could help with flakiness as we should send sigterm right away.
+	var gracePeriod int64 = 1
 	volumeMounts := []v1.VolumeMount{}
 	volumes := []v1.Volume{}
 	if volumeSource != nil {
@@ -993,7 +1017,8 @@ func podWithCommand(volumeSource *v1.VolumeSource, resources v1.ResourceRequirem
 	return &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-pod", name)},
 		Spec: v1.PodSpec{
-			RestartPolicy: v1.RestartPolicyNever,
+			RestartPolicy:                 v1.RestartPolicyNever,
+			TerminationGracePeriodSeconds: &gracePeriod,
 			Containers: []v1.Container{
 				{
 					Image: busyboxImage,
@@ -1013,6 +1038,10 @@ func podWithCommand(volumeSource *v1.VolumeSource, resources v1.ResourceRequirem
 }
 
 func getMemhogPod(podName string, ctnName string, res v1.ResourceRequirements) *v1.Pod {
+	// Due to https://github.com/kubernetes/kubernetes/issues/115819,
+	// When evictionHard to used, we were setting grace period to 0 which meant the default setting (30 seconds)
+	// This could help with flakiness as we should send sigterm right away.
+	var gracePeriod int64 = 1
 	env := []v1.EnvVar{
 		{
 			Name: "MEMORY_LIMIT",
@@ -1041,7 +1070,8 @@ func getMemhogPod(podName string, ctnName string, res v1.ResourceRequirements) *
 			Name: podName,
 		},
 		Spec: v1.PodSpec{
-			RestartPolicy: v1.RestartPolicyNever,
+			RestartPolicy:                 v1.RestartPolicyNever,
+			TerminationGracePeriodSeconds: &gracePeriod,
 			Containers: []v1.Container{
 				{
 					Name:            ctnName,

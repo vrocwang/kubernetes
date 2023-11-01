@@ -63,7 +63,19 @@ type initOptions struct {
 	uploadCerts             bool
 	skipCertificateKeyPrint bool
 	patchesDir              string
+	skipCRIDetect           bool
 }
+
+const (
+	// CoreDNSPhase is the name of CoreDNS subphase in "kubeadm init"
+	coreDNSPhase = "addon/coredns"
+
+	// KubeProxyPhase is the name of kube-proxy subphase during "kubeadm init"
+	kubeProxyPhase = "addon/kube-proxy"
+
+	// AddonPhase is the name of addon phase during "kubeadm init"
+	addonPhase = "addon"
+)
 
 // compile-time assert that the local data object satisfies the phases data interface.
 var _ phases.InitData = &initData{}
@@ -71,20 +83,21 @@ var _ phases.InitData = &initData{}
 // initData defines all the runtime information used when running the kubeadm init workflow;
 // this data is shared across all the phases that are included in the workflow.
 type initData struct {
-	cfg                     *kubeadmapi.InitConfiguration
-	skipTokenPrint          bool
-	dryRun                  bool
-	kubeconfigDir           string
-	kubeconfigPath          string
-	ignorePreflightErrors   sets.Set[string]
-	certificatesDir         string
-	dryRunDir               string
-	externalCA              bool
-	client                  clientset.Interface
-	outputWriter            io.Writer
-	uploadCerts             bool
-	skipCertificateKeyPrint bool
-	patchesDir              string
+	cfg                         *kubeadmapi.InitConfiguration
+	skipTokenPrint              bool
+	dryRun                      bool
+	kubeconfigDir               string
+	kubeconfigPath              string
+	ignorePreflightErrors       sets.Set[string]
+	certificatesDir             string
+	dryRunDir                   string
+	externalCA                  bool
+	client                      clientset.Interface
+	outputWriter                io.Writer
+	uploadCerts                 bool
+	skipCertificateKeyPrint     bool
+	patchesDir                  string
+	adminKubeConfigBootstrapped bool
 }
 
 // newCmdInit returns "kubeadm init" command.
@@ -150,9 +163,9 @@ func newCmdInit(out io.Writer, initOptions *initOptions) *cobra.Command {
 	// both when running the entire workflow or single phases
 	initRunner.SetDataInitializer(func(cmd *cobra.Command, args []string) (workflow.RunData, error) {
 		if cmd.Flags().Lookup(options.NodeCRISocket) == nil {
-			// avoid CRI detection
+			// skip CRI detection
 			// assume that the command execution does not depend on CRISocket when --cri-socket flag is not set
-			initOptions.externalInitCfg.NodeRegistration.CRISocket = kubeadmconstants.UnknownCRISocket
+			initOptions.skipCRIDetect = true
 		}
 		data, err := newInitData(cmd, args, initOptions, out)
 		if err != nil {
@@ -162,6 +175,8 @@ func newCmdInit(out io.Writer, initOptions *initOptions) *cobra.Command {
 		if len(initRunner.Options.SkipPhases) == 0 {
 			initRunner.Options.SkipPhases = data.cfg.SkipPhases
 		}
+
+		initRunner.Options.SkipPhases = manageSkippedAddons(&data.cfg.ClusterConfiguration, initRunner.Options.SkipPhases)
 		return data, nil
 	})
 
@@ -301,7 +316,9 @@ func newInitData(cmd *cobra.Command, args []string, initOptions *initOptions, ou
 
 	// Either use the config file if specified, or convert public kubeadm API to the internal InitConfiguration
 	// and validates InitConfiguration
-	cfg, err := configutil.LoadOrDefaultInitConfiguration(initOptions.cfgPath, initOptions.externalInitCfg, initOptions.externalClusterCfg)
+	cfg, err := configutil.LoadOrDefaultInitConfiguration(initOptions.cfgPath, initOptions.externalInitCfg, initOptions.externalClusterCfg, configutil.LoadOrDefaultConfigurationOptions{
+		SkipCRIDetect: initOptions.skipCRIDetect,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -492,12 +509,22 @@ func (d *initData) Client() (clientset.Interface, error) {
 			// If we're dry-running, we should create a faked client that answers some GETs in order to be able to do the full init flow and just logs the rest of requests
 			dryRunGetter := apiclient.NewInitDryRunGetter(d.cfg.NodeRegistration.Name, svcSubnetCIDR.String())
 			d.client = apiclient.NewDryRunClient(dryRunGetter, os.Stdout)
-		} else {
-			// If we're acting for real, we should create a connection to the API server and wait for it to come up
+		} else { // Use a real client
 			var err error
-			d.client, err = kubeconfigutil.ClientSetFromFile(d.KubeConfigPath())
-			if err != nil {
-				return nil, err
+			if !d.adminKubeConfigBootstrapped {
+				// Call EnsureAdminClusterRoleBinding() to obtain a working client from admin.conf.
+				d.client, err = kubeconfigphase.EnsureAdminClusterRoleBinding(kubeadmconstants.KubernetesDir, nil)
+				if err != nil {
+					return nil, errors.Wrapf(err, "could not bootstrap the admin user in file %s", kubeadmconstants.AdminKubeConfigFileName)
+				}
+				d.adminKubeConfigBootstrapped = true
+			} else {
+				// In case adminKubeConfigBootstrapped is already set just return a client from the default
+				// kubeconfig location.
+				d.client, err = kubeconfigutil.ClientSetFromFile(d.KubeConfigPath())
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -523,4 +550,44 @@ func (d *initData) PatchesDir() string {
 		return d.cfg.Patches.Directory
 	}
 	return ""
+}
+
+// manageSkippedAddons syncs proxy and DNS "Disabled" status and skipPhases.
+func manageSkippedAddons(cfg *kubeadmapi.ClusterConfiguration, skipPhases []string) []string {
+	var (
+		skipDNSPhase   = false
+		skipProxyPhase = false
+	)
+	// If the DNS or Proxy addons are disabled, skip the corresponding phase.
+	// Alternatively, update the proxy and DNS "Disabled" status based on skipped addon phases.
+	if isPhaseInSkipPhases(addonPhase, skipPhases) {
+		skipDNSPhase = true
+		skipProxyPhase = true
+		cfg.DNS.Disabled = true
+		cfg.Proxy.Disabled = true
+	}
+	if isPhaseInSkipPhases(coreDNSPhase, skipPhases) {
+		skipDNSPhase = true
+		cfg.DNS.Disabled = true
+	}
+	if isPhaseInSkipPhases(kubeProxyPhase, skipPhases) {
+		skipProxyPhase = true
+		cfg.Proxy.Disabled = true
+	}
+	if cfg.DNS.Disabled && !skipDNSPhase {
+		skipPhases = append(skipPhases, coreDNSPhase)
+	}
+	if cfg.Proxy.Disabled && !skipProxyPhase {
+		skipPhases = append(skipPhases, kubeProxyPhase)
+	}
+	return skipPhases
+}
+
+func isPhaseInSkipPhases(phase string, skipPhases []string) bool {
+	for _, item := range skipPhases {
+		if item == phase {
+			return true
+		}
+	}
+	return false
 }
