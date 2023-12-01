@@ -2,7 +2,7 @@
 
 module k8s.io/code-generator/examples
 
-go 1.21.3
+go 1.21
 
 require (
 	k8s.io/api v0.0.0
@@ -55,5 +55,3 @@ replace (
 	k8s.io/apimachinery => ../../apimachinery
 	k8s.io/client-go => ../../client-go
 )
-
-replace k8s.io/klog/v2 => github.com/pohly/klog/v2 v2.40.2-0.20231026184525-77259d15f4f0
