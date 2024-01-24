@@ -17,6 +17,10 @@
 # This presents several functions for packages which want to use kubernetes
 # code-generation tools.
 
+# These functions insist that your input IDL (commented go) files be located in
+# go packages following the pattern $input_pkg_root/$something_sans_slash/$api_version .
+# Those $something_sans_slash will be propagated into the output directory structure.
+
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -33,7 +37,7 @@ function kube::codegen::internal::git_find() {
 function kube::codegen::internal::git_grep() {
     # We want to include modified and untracked files because this might be
     # running against code which is not tracked by git yet.
-    git grep --untracked "$@"
+    git grep --untracked "$@" ":(exclude)vendor/"
 }
 
 # Generate tagged helper code: conversions, deepcopy, and defaults
@@ -42,6 +46,7 @@ function kube::codegen::internal::git_grep() {
 #   --input-pkg-root <string>
 #     The root package under which to search for files which request code to be
 #     generated.  This must be Go package syntax, e.g.  "k8s.io/foo/bar".
+#     See note at the top about package structure below that.
 #
 #   --output-base <string>
 #     The root directory under which to emit code.  The concatenation of
@@ -126,7 +131,7 @@ function kube::codegen::gen_helpers() {
             -e '+k8s:deepcopy-gen=' \
             ":(glob)${root}"/'**/*.go' \
             || true \
-        ) | xargs -0 -n1 dirname \
+        ) | while read -r -d $'\0' F; do dirname "${F}"; done \
           | LC_ALL=C sort -u
     )
 
@@ -143,7 +148,7 @@ function kube::codegen::gen_helpers() {
         done
         "${gobin}/deepcopy-gen" \
             -v "${v}" \
-            -O zz_generated.deepcopy \
+            --output-file-base zz_generated.deepcopy \
             --go-header-file "${boilerplate}" \
             --output-base "${out_base}" \
             "${input_args[@]}"
@@ -160,7 +165,7 @@ function kube::codegen::gen_helpers() {
             -e '+k8s:defaulter-gen=' \
             ":(glob)${root}"/'**/*.go' \
             || true \
-        ) | xargs -0 -n1 dirname \
+        ) | while read -r -d $'\0' F; do dirname "${F}"; done \
           | LC_ALL=C sort -u
     )
 
@@ -177,7 +182,7 @@ function kube::codegen::gen_helpers() {
         done
         "${gobin}/defaulter-gen" \
             -v "${v}" \
-            -O zz_generated.defaults \
+            --output-file-base zz_generated.defaults \
             --go-header-file "${boilerplate}" \
             --output-base "${out_base}" \
             "${input_args[@]}"
@@ -194,7 +199,7 @@ function kube::codegen::gen_helpers() {
             -e '+k8s:conversion-gen=' \
             ":(glob)${root}"/'**/*.go' \
             || true \
-        ) | xargs -0 -n1 dirname \
+        ) | while read -r -d $'\0' F; do dirname "${F}"; done \
           | LC_ALL=C sort -u
     )
 
@@ -215,7 +220,7 @@ function kube::codegen::gen_helpers() {
         done
         "${gobin}/conversion-gen" \
             -v "${v}" \
-            -O zz_generated.conversion \
+            --output-file-base zz_generated.conversion \
             --go-header-file "${boilerplate}" \
             --output-base "${out_base}" \
             "${extra_peer_args[@]:+"${extra_peer_args[@]}"}" \
@@ -229,6 +234,7 @@ function kube::codegen::gen_helpers() {
 #   --input-pkg-root <string>
 #     The root package under which to search for files which request openapi to
 #     be generated.  This must be Go package syntax, e.g.  "k8s.io/foo/bar".
+#     See note at the top about package structure below that.
 #
 #   --output-pkg-root <string>
 #     The root package under which generated directories and files
@@ -355,7 +361,7 @@ function kube::codegen::gen_openapi() {
             -e '+k8s:openapi-gen=' \
             ":(glob)${root}"/'**/*.go' \
             || true \
-        ) | xargs -0 -n1 dirname \
+        ) | while read -r -d $'\0' F; do dirname "${F}"; done \
           | LC_ALL=C sort -u
     )
 
@@ -372,7 +378,7 @@ function kube::codegen::gen_openapi() {
         done
         "${gobin}/openapi-gen" \
             -v "${v}" \
-            -O zz_generated.openapi \
+            --output-file-base zz_generated.openapi \
             --go-header-file "${boilerplate}" \
             --output-base "${out_base}" \
             --output-package "${out_pkg_root}/${openapi_subdir}" \
@@ -399,6 +405,7 @@ function kube::codegen::gen_openapi() {
 #     The root package under which to search for *.go files which request
 #     clients to be generated.  This must be Go package syntax, e.g.
 #     "k8s.io/foo/bar".
+#     See note at the top about package structure below that.
 #
 #   --one-input-api <string>
 #     A specific API (a directory) under the --input-pkg-root for which to
@@ -563,7 +570,7 @@ function kube::codegen::gen_client() {
             -e '+genclient' \
             ":(glob)${in_root}${one_input_api}"/'**/*.go' \
             || true \
-        ) | xargs -0 -n1 dirname \
+        ) | while read -r -d $'\0' F; do dirname "${F}"; done \
           | LC_ALL=C sort -u
     )
 
