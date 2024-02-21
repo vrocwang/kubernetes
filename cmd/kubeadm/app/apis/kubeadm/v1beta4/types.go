@@ -149,7 +149,7 @@ type ClusterConfiguration struct {
 	ClusterName string `json:"clusterName,omitempty"`
 
 	// EncryptionAlgorithm holds the type of asymmetric encryption algorithm used for keys and certificates.
-	// Can be "RSA" (default algorithm, key size is 2048) or "ECDSA" (uses the P-256 elliptic curve).
+	// Can be one of "RSA-2048" (default), "RSA-3072", "RSA-4096" or "ECDSA-P256".
 	// +optional
 	EncryptionAlgorithm EncryptionAlgorithmType `json:"encryptionAlgorithm,omitempty"`
 }
@@ -263,6 +263,11 @@ type NodeRegistrationOptions struct {
 	// If this field is unset kubeadm will default it to "IfNotPresent", or pull the required images if not present on the host.
 	// +optional
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
+	// ImagePullSerial specifies if image pulling performed by kubeadm must be done serially or in parallel.
+	// Default: true
+	// +optional
+	ImagePullSerial *bool `json:"imagePullSerial,omitempty"`
 }
 
 // Networking contains elements describing cluster's networking configuration
@@ -544,10 +549,14 @@ type EnvVar struct {
 type EncryptionAlgorithmType string
 
 const (
-	// EncryptionAlgorithmECDSA defines the ECDSA encryption algorithm type.
-	EncryptionAlgorithmECDSA EncryptionAlgorithmType = "ECDSA"
-	// EncryptionAlgorithmRSA defines the RSA encryption algorithm type.
-	EncryptionAlgorithmRSA EncryptionAlgorithmType = "RSA"
+	// EncryptionAlgorithmECDSAP256 defines the ECDSA encryption algorithm type with curve P256.
+	EncryptionAlgorithmECDSAP256 EncryptionAlgorithmType = "ECDSA-P256"
+	// EncryptionAlgorithmRSA2048 defines the RSA encryption algorithm type with key size 2048 bits.
+	EncryptionAlgorithmRSA2048 EncryptionAlgorithmType = "RSA-2048"
+	// EncryptionAlgorithmRSA3072 defines the RSA encryption algorithm type with key size 3072 bits.
+	EncryptionAlgorithmRSA3072 EncryptionAlgorithmType = "RSA-3072"
+	// EncryptionAlgorithmRSA4096 defines the RSA encryption algorithm type with key size 4096 bits.
+	EncryptionAlgorithmRSA4096 EncryptionAlgorithmType = "RSA-4096"
 )
 
 // Timeouts holds various timeouts that apply to kubeadm commands.
