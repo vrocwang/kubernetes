@@ -253,6 +253,10 @@ var (
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	RecoverVolumeExpansionFailure = framework.WithFeature(framework.ValidFeatures.Add("RecoverVolumeExpansionFailure"))
 
+	// RelaxedEnvironmentVariableValidation used when we verify whether the pod can consume all printable ASCII characters as environment variable names,
+	// and whether the pod can consume configmap/secret that key starts with a number.
+	RelaxedEnvironmentVariableValidation = framework.WithFeature(framework.ValidFeatures.Add("RelaxedEnvironmentVariableValidation"))
+
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	Recreate = framework.WithFeature(framework.ValidFeatures.Add("Recreate"))
 
@@ -268,11 +272,15 @@ var (
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	SeccompDefault = framework.WithFeature(framework.ValidFeatures.Add("SeccompDefault"))
 
-	// TODO: document the feature (owning SIG, when to use this feature for a test)
+	// Owner: sig-storage
+	// This feature marks tests that need all schedulable Linux nodes in the cluster to have SELinux enabled.
 	SELinux = framework.WithFeature(framework.ValidFeatures.Add("SELinux"))
 
-	// TODO: document the feature (owning SIG, when to use this feature for a test)
-	SELinuxMountReadWriteOncePod = framework.WithFeature(framework.ValidFeatures.Add("SELinuxMountReadWriteOncePod"))
+	// Owner: sig-storage
+	// This feature marks tests that need SELinuxMountReadWriteOncePod feature gate enabled and SELinuxMount **disabled**.
+	// This is a temporary feature to allow testing of metrics when SELinuxMount is disabled.
+	// TODO: remove when SELinuxMount feature gate is enabled by default.
+	SELinuxMountReadWriteOncePodOnly = framework.WithFeature(framework.ValidFeatures.Add("SELinuxMountReadWriteOncePodOnly"))
 
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	ServiceCIDRs = framework.WithFeature(framework.ValidFeatures.Add("ServiceCIDRs"))
@@ -327,6 +335,12 @@ var (
 
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	UserNamespacesSupport = framework.WithFeature(framework.ValidFeatures.Add("UserNamespacesSupport"))
+
+	// Owned by SIG Node
+	// Can be used when the UserNamespacesPodSecurityStandards kubelet feature
+	// gate is enabled to relax the application of Pod Security Standards in a
+	// controlled way.
+	UserNamespacesPodSecurityStandards = framework.WithFeature(framework.ValidFeatures.Add("UserNamespacesPodSecurityStandards"))
 
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	ValidatingAdmissionPolicy = framework.WithFeature(framework.ValidFeatures.Add("ValidatingAdmissionPolicy"))
