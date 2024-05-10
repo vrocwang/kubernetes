@@ -951,9 +951,9 @@ func TestControllerSyncJob(t *testing.T) {
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			logger, _ := ktesting.NewTestContext(t)
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.PodIndexLabel, !tc.podIndexLabelDisabled)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodReplacementPolicy, tc.jobPodReplacementPolicy)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.jobPodFailurePolicy)()
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.PodIndexLabel, !tc.podIndexLabelDisabled)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodReplacementPolicy, tc.jobPodReplacementPolicy)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.jobPodFailurePolicy)
 			// job manager setup
 			clientSet := clientset.NewForConfigOrDie(&restclient.Config{Host: "", ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
 
@@ -1932,8 +1932,8 @@ func TestTrackJobStatusAndRemoveFinalizers(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobBackoffLimitPerIndex, tc.enableJobBackoffLimitPerIndex)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobSuccessPolicy, tc.enableJobSuccessPolicy)()
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobBackoffLimitPerIndex, tc.enableJobBackoffLimitPerIndex)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobSuccessPolicy, tc.enableJobSuccessPolicy)
 
 			clientSet := clientset.NewForConfigOrDie(&restclient.Config{Host: "", ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
 			manager, _ := newControllerFromClientWithClock(ctx, t, clientSet, controller.NoResyncPeriodFunc, fakeClock)
@@ -2418,7 +2418,7 @@ func TestSyncJobWhenManagedBy(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobManagedBy, tc.enableJobManagedBy)()
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobManagedBy, tc.enableJobManagedBy)
 
 			clientset := clientset.NewForConfigOrDie(&restclient.Config{Host: "", ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
 			manager, sharedInformerFactory := newControllerFromClient(ctx, t, clientset, controller.NoResyncPeriodFunc)
@@ -3510,9 +3510,9 @@ func TestSyncJobWithJobPodFailurePolicy(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.enableJobPodFailurePolicy)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.PodDisruptionConditions, tc.enablePodDisruptionConditions)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodReplacementPolicy, tc.enableJobPodReplacementPolicy)()
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.enableJobPodFailurePolicy)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.PodDisruptionConditions, tc.enablePodDisruptionConditions)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodReplacementPolicy, tc.enableJobPodReplacementPolicy)
 
 			if tc.job.Spec.PodReplacementPolicy == nil {
 				tc.job.Spec.PodReplacementPolicy = podReplacementPolicy(batch.Failed)
@@ -4314,9 +4314,9 @@ func TestSyncJobWithJobSuccessPolicy(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.enableJobFailurePolicy)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobBackoffLimitPerIndex, tc.enableBackoffLimitPerIndex)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobSuccessPolicy, tc.enableJobSuccessPolicy)()
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.enableJobFailurePolicy)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobBackoffLimitPerIndex, tc.enableBackoffLimitPerIndex)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobSuccessPolicy, tc.enableJobSuccessPolicy)
 
 			clientSet := clientset.NewForConfigOrDie(&restclient.Config{Host: "", ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
 			fakeClock := clocktesting.NewFakeClock(now)
@@ -4808,8 +4808,8 @@ func TestSyncJobWithJobBackoffLimitPerIndex(t *testing.T) {
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobBackoffLimitPerIndex, tc.enableJobBackoffLimitPerIndex)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.enableJobPodFailurePolicy)()
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobBackoffLimitPerIndex, tc.enableJobBackoffLimitPerIndex)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.JobPodFailurePolicy, tc.enableJobPodFailurePolicy)
 			clientset := clientset.NewForConfigOrDie(&restclient.Config{Host: "", ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"}}})
 			fakeClock := clocktesting.NewFakeClock(now)
 			manager, sharedInformerFactory := newControllerFromClientWithClock(ctx, t, clientset, controller.NoResyncPeriodFunc, fakeClock)
@@ -5214,22 +5214,22 @@ func TestAddPod(t *testing.T) {
 	jm.addPod(logger, pod1)
 	verifyEmptyQueueAndAwaitForQueueLen(ctx, t, jm, 1)
 	key, done := jm.queue.Get()
-	if key == nil || done {
+	if key == "" || done {
 		t.Fatalf("failed to enqueue controller for pod %v", pod1.Name)
 	}
 	expectedKey, _ := controller.KeyFunc(job1)
-	if got, want := key.(string), expectedKey; got != want {
+	if got, want := key, expectedKey; got != want {
 		t.Errorf("queue.Get() = %v, want %v", got, want)
 	}
 
 	jm.addPod(logger, pod2)
 	verifyEmptyQueueAndAwaitForQueueLen(ctx, t, jm, 1)
 	key, done = jm.queue.Get()
-	if key == nil || done {
+	if key == "" || done {
 		t.Fatalf("failed to enqueue controller for pod %v", pod2.Name)
 	}
 	expectedKey, _ = controller.KeyFunc(job2)
-	if got, want := key.(string), expectedKey; got != want {
+	if got, want := key, expectedKey; got != want {
 		t.Errorf("queue.Get() = %v, want %v", got, want)
 	}
 }
@@ -5290,11 +5290,11 @@ func TestUpdatePod(t *testing.T) {
 	jm.updatePod(logger, &prev, pod1)
 	verifyEmptyQueueAndAwaitForQueueLen(ctx, t, jm, 1)
 	key, done := jm.queue.Get()
-	if key == nil || done {
+	if key == "" || done {
 		t.Fatalf("failed to enqueue controller for pod %v", pod1.Name)
 	}
 	expectedKey, _ := controller.KeyFunc(job1)
-	if got, want := key.(string), expectedKey; got != want {
+	if got, want := key, expectedKey; got != want {
 		t.Errorf("queue.Get() = %v, want %v", got, want)
 	}
 
@@ -5303,11 +5303,11 @@ func TestUpdatePod(t *testing.T) {
 	jm.updatePod(logger, &prev, pod2)
 	verifyEmptyQueueAndAwaitForQueueLen(ctx, t, jm, 1)
 	key, done = jm.queue.Get()
-	if key == nil || done {
+	if key == "" || done {
 		t.Fatalf("failed to enqueue controller for pod %v", pod2.Name)
 	}
 	expectedKey, _ = controller.KeyFunc(job2)
-	if got, want := key.(string), expectedKey; got != want {
+	if got, want := key, expectedKey; got != want {
 		t.Errorf("queue.Get() = %v, want %v", got, want)
 	}
 }
@@ -5420,22 +5420,22 @@ func TestDeletePod(t *testing.T) {
 	jm.deletePod(logger, pod1, true)
 	verifyEmptyQueueAndAwaitForQueueLen(ctx, t, jm, 1)
 	key, done := jm.queue.Get()
-	if key == nil || done {
+	if key == "" || done {
 		t.Fatalf("failed to enqueue controller for pod %v", pod1.Name)
 	}
 	expectedKey, _ := controller.KeyFunc(job1)
-	if got, want := key.(string), expectedKey; got != want {
+	if got, want := key, expectedKey; got != want {
 		t.Errorf("queue.Get() = %v, want %v", got, want)
 	}
 
 	jm.deletePod(logger, pod2, true)
 	verifyEmptyQueueAndAwaitForQueueLen(ctx, t, jm, 1)
 	key, done = jm.queue.Get()
-	if key == nil || done {
+	if key == "" || done {
 		t.Fatalf("failed to enqueue controller for pod %v", pod2.Name)
 	}
 	expectedKey, _ = controller.KeyFunc(job2)
-	if got, want := key.(string), expectedKey; got != want {
+	if got, want := key, expectedKey; got != want {
 		t.Errorf("queue.Get() = %v, want %v", got, want)
 	}
 }
@@ -5725,23 +5725,23 @@ func TestJobApiBackoffReset(t *testing.T) {
 	verifyEmptyQueue(ctx, t, manager)
 }
 
-var _ workqueue.RateLimitingInterface = &fakeRateLimitingQueue{}
+var _ workqueue.TypedRateLimitingInterface[string] = &fakeRateLimitingQueue{}
 
 type fakeRateLimitingQueue struct {
-	workqueue.Interface
+	workqueue.TypedInterface[string]
 	requeues int
-	item     interface{}
+	item     string
 	duration time.Duration
 }
 
-func (f *fakeRateLimitingQueue) AddRateLimited(item interface{}) {}
-func (f *fakeRateLimitingQueue) Forget(item interface{}) {
+func (f *fakeRateLimitingQueue) AddRateLimited(item string) {}
+func (f *fakeRateLimitingQueue) Forget(item string) {
 	f.requeues = 0
 }
-func (f *fakeRateLimitingQueue) NumRequeues(item interface{}) int {
+func (f *fakeRateLimitingQueue) NumRequeues(item string) int {
 	return f.requeues
 }
-func (f *fakeRateLimitingQueue) AddAfter(item interface{}, duration time.Duration) {
+func (f *fakeRateLimitingQueue) AddAfter(item string, duration time.Duration) {
 	f.item = item
 	f.duration = duration
 }

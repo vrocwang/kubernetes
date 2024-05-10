@@ -46,8 +46,8 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/volumebinding"
 	schedutil "k8s.io/kubernetes/pkg/scheduler/util"
+	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 	"k8s.io/utils/ptr"
 )
 
@@ -302,7 +302,7 @@ type dynamicResources struct {
 	// When implementing cluster autoscaler support, this assume cache or
 	// something like it (see https://github.com/kubernetes/kubernetes/pull/112202)
 	// might have to be managed by the cluster autoscaler.
-	claimAssumeCache volumebinding.AssumeCache
+	claimAssumeCache *assumecache.AssumeCache
 
 	// inFlightAllocations is map from claim UUIDs to claim objects for those claims
 	// for which allocation was triggered during a scheduling cycle and the
@@ -355,7 +355,7 @@ func New(ctx context.Context, plArgs runtime.Object, fh framework.Handle, fts fe
 		classParametersLister:      fh.SharedInformerFactory().Resource().V1alpha2().ResourceClassParameters().Lister(),
 		resourceSliceLister:        fh.SharedInformerFactory().Resource().V1alpha2().ResourceSlices().Lister(),
 		claimNameLookup:            resourceclaim.NewNameLookup(fh.ClientSet()),
-		claimAssumeCache:           volumebinding.NewAssumeCache(logger, fh.SharedInformerFactory().Resource().V1alpha2().ResourceClaims().Informer(), "claim", "", nil),
+		claimAssumeCache:           assumecache.NewAssumeCache(logger, fh.SharedInformerFactory().Resource().V1alpha2().ResourceClaims().Informer(), "claim", "", nil),
 	}
 
 	return pl, nil
@@ -731,7 +731,7 @@ func (pl *dynamicResources) isSchedulableAfterPodSchedulingContextChange(logger 
 	// before moving DRA to beta.
 	if podScheduling.Spec.SelectedNode != "" {
 		for _, claimStatus := range podScheduling.Status.ResourceClaims {
-			if sliceContains(claimStatus.UnsuitableNodes, podScheduling.Spec.SelectedNode) {
+			if slices.Contains(claimStatus.UnsuitableNodes, podScheduling.Spec.SelectedNode) {
 				logger.V(5).Info("PodSchedulingContext has unsuitable selected node, schedule immediately", "pod", klog.KObj(pod), "selectedNode", podScheduling.Spec.SelectedNode, "podResourceName", claimStatus.Name)
 				return framework.Queue, nil
 			}
@@ -763,15 +763,6 @@ func (pl *dynamicResources) isSchedulableAfterPodSchedulingContextChange(logger 
 func podSchedulingHasClaimInfo(podScheduling *resourcev1alpha2.PodSchedulingContext, podResourceName string) bool {
 	for _, claimStatus := range podScheduling.Status.ResourceClaims {
 		if claimStatus.Name == podResourceName {
-			return true
-		}
-	}
-	return false
-}
-
-func sliceContains(hay []string, needle string) bool {
-	for _, item := range hay {
-		if item == needle {
 			return true
 		}
 	}
@@ -1218,7 +1209,7 @@ func (pl *dynamicResources) PostFilter(ctx context.Context, cs *framework.CycleS
 			// Then we can simply clear the allocation. Once the
 			// claim informer catches up, the controllers will
 			// be notified about this change.
-			clearAllocation := state.informationsForClaim[index].controller != nil
+			clearAllocation := state.informationsForClaim[index].structuredParameters
 
 			// Before we tell a driver to deallocate a claim, we
 			// have to stop telling it to allocate. Otherwise,
@@ -1237,6 +1228,7 @@ func (pl *dynamicResources) PostFilter(ctx context.Context, cs *framework.CycleS
 			claim := claim.DeepCopy()
 			claim.Status.ReservedFor = nil
 			if clearAllocation {
+				claim.Status.DriverName = ""
 				claim.Status.Allocation = nil
 			} else {
 				claim.Status.DeallocationRequested = true
@@ -1329,20 +1321,11 @@ func haveAllPotentialNodes(schedulingCtx *resourcev1alpha2.PodSchedulingContext,
 		return false
 	}
 	for _, node := range nodes {
-		if !haveNode(schedulingCtx.Spec.PotentialNodes, node.Node().Name) {
+		if !slices.Contains(schedulingCtx.Spec.PotentialNodes, node.Node().Name) {
 			return false
 		}
 	}
 	return true
-}
-
-func haveNode(nodeNames []string, nodeName string) bool {
-	for _, n := range nodeNames {
-		if n == nodeName {
-			return true
-		}
-	}
-	return false
 }
 
 // Reserve reserves claims for the pod.
@@ -1401,7 +1384,7 @@ func (pl *dynamicResources) Reserve(ctx context.Context, cs *framework.CycleStat
 		// scheduler will pick it forever even when it cannot satisfy
 		// the claim.
 		if state.podSchedulingState.schedulingCtx == nil ||
-			!containsNode(state.podSchedulingState.schedulingCtx.Spec.PotentialNodes, nodeName) {
+			!slices.Contains(state.podSchedulingState.schedulingCtx.Spec.PotentialNodes, nodeName) {
 			potentialNodes := []string{nodeName}
 			state.podSchedulingState.potentialNodes = &potentialNodes
 			logger.V(5).Info("asking for information about single potential node", "pod", klog.KObj(pod), "node", klog.ObjectRef{Name: nodeName})
@@ -1419,7 +1402,11 @@ func (pl *dynamicResources) Reserve(ctx context.Context, cs *framework.CycleStat
 		}
 		state.informationsForClaim[index].allocation = allocation
 		state.informationsForClaim[index].allocationDriverName = driverName
+		// Strictly speaking, we don't need to store the full modified object.
+		// The allocation would be enough. The full object is useful for
+		// debugging and testing, so let's make it realistic.
 		claim = claim.DeepCopy()
+		claim.Finalizers = append(claim.Finalizers, resourcev1alpha2.Finalizer)
 		claim.Status.DriverName = driverName
 		claim.Status.Allocation = allocation
 		pl.inFlightAllocations.Store(claim.UID, claim)
@@ -1471,15 +1458,6 @@ func (pl *dynamicResources) Reserve(ctx context.Context, cs *framework.CycleStat
 	// irreversible, so it better should come last. On the other hand,
 	// triggering both in parallel might be faster.
 	return statusPending(logger, "waiting for resource driver to provide information", "pod", klog.KObj(pod))
-}
-
-func containsNode(hay []string, needle string) bool {
-	for _, node := range hay {
-		if node == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // Unreserve clears the ReservedFor field for all claims.

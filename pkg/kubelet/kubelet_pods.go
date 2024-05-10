@@ -41,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/version"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/klog/v2"
@@ -62,6 +63,7 @@ import (
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util"
 	utilfs "k8s.io/kubernetes/pkg/util/filesystem"
+	utilkernel "k8s.io/kubernetes/pkg/util/kernel"
 	utilpod "k8s.io/kubernetes/pkg/util/pod"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/hostutil"
@@ -130,6 +132,17 @@ func (kl *Kubelet) getKubeletMappings() (uint32, uint32, error) {
 
 	if !utilfeature.DefaultFeatureGate.Enabled(features.UserNamespacesSupport) {
 		return defaultFirstID, defaultLen, nil
+	} else {
+		kernelVersion, err := utilkernel.GetVersion()
+		if err != nil {
+			return 0, 0, fmt.Errorf("failed to get kernel version, unable to determine if feature %s can be supported : %w",
+				features.UserNamespacesSupport, err)
+		}
+		if kernelVersion != nil && !kernelVersion.AtLeast(version.MustParseGeneric(utilkernel.UserNamespacesSupportKernelVersion)) {
+			return 0, 0, fmt.Errorf(
+				"the kernel version (%s) is incompatible with the %s feature gate, which needs %s as a minimum kernel version",
+				kernelVersion, features.UserNamespacesSupport, utilkernel.UserNamespacesSupportKernelVersion)
+		}
 	}
 
 	_, err := user.Lookup(kubeletUser)
@@ -2427,9 +2440,8 @@ func (kl *Kubelet) cleanupOrphanedPodCgroups(pcm cm.PodContainerManager, cgroupP
 		// If volumes have not been unmounted/detached, do not delete the cgroup
 		// so any memory backed volumes don't have their charges propagated to the
 		// parent croup.  If the volumes still exist, reduce the cpu shares for any
-		// process in the cgroup to the minimum value while we wait.  if the kubelet
-		// is configured to keep terminated volumes, we will delete the cgroup and not block.
-		if podVolumesExist := kl.podVolumesExist(uid); podVolumesExist && !kl.keepTerminatedPodVolumes {
+		// process in the cgroup to the minimum value while we wait.
+		if podVolumesExist := kl.podVolumesExist(uid); podVolumesExist {
 			klog.V(3).InfoS("Orphaned pod found, but volumes not yet removed.  Reducing cpu to minimum", "podUID", uid)
 			if err := pcm.ReduceCPULimits(val); err != nil {
 				klog.InfoS("Failed to reduce cpu time for pod pending volume cleanup", "podUID", uid, "err", err)
