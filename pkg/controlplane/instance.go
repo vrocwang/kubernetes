@@ -38,15 +38,17 @@ import (
 	certificatesapiv1 "k8s.io/api/certificates/v1"
 	certificatesv1alpha1 "k8s.io/api/certificates/v1alpha1"
 	coordinationapiv1 "k8s.io/api/coordination/v1"
+	coordinationv1alpha1 "k8s.io/api/coordination/v1alpha1"
 	apiv1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	eventsv1 "k8s.io/api/events/v1"
 	networkingapiv1 "k8s.io/api/networking/v1"
 	networkingapiv1alpha1 "k8s.io/api/networking/v1alpha1"
+	networkingapiv1beta1 "k8s.io/api/networking/v1beta1"
 	nodev1 "k8s.io/api/node/v1"
 	policyapiv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	resourcev1alpha2 "k8s.io/api/resource/v1alpha2"
+	resourceapi "k8s.io/api/resource/v1alpha3"
 	schedulingapiv1 "k8s.io/api/scheduling/v1"
 	storageapiv1 "k8s.io/api/storage/v1"
 	storageapiv1alpha1 "k8s.io/api/storage/v1alpha1"
@@ -58,6 +60,7 @@ import (
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	serverstorage "k8s.io/apiserver/pkg/server/storage"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	clientdiscovery "k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	discoveryclient "k8s.io/client-go/kubernetes/typed/discovery/v1"
@@ -213,7 +216,7 @@ func (c *Config) createLeaseReconciler() reconcilers.EndpointReconciler {
 	endpointsAdapter := reconcilers.NewEndpointsAdapter(endpointClient, endpointSliceClient)
 
 	ttl := c.Extra.MasterEndpointReconcileTTL
-	config, err := c.ControlPlane.StorageFactory.NewConfig(api.Resource("apiServerIPInfo"))
+	config, err := c.ControlPlane.StorageFactory.NewConfig(api.Resource("apiServerIPInfo"), &api.Endpoints{})
 	if err != nil {
 		klog.Fatalf("Error creating storage factory config: %v", err)
 	}
@@ -322,67 +325,11 @@ func (c CompletedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		return nil, err
 	}
 
-	// TODO: update to a version that caches success but will recheck on failure, unlike memcache discovery
-	discoveryClientForAdmissionRegistration := client.Discovery()
-
-	legacyRESTStorageProvider, err := corerest.New(corerest.Config{
-		GenericConfig: corerest.GenericConfig{
-			StorageFactory:              c.ControlPlane.Extra.StorageFactory,
-			EventTTL:                    c.ControlPlane.Extra.EventTTL,
-			LoopbackClientConfig:        c.ControlPlane.Generic.LoopbackClientConfig,
-			ServiceAccountIssuer:        c.ControlPlane.Extra.ServiceAccountIssuer,
-			ExtendExpiration:            c.ControlPlane.Extra.ExtendExpiration,
-			ServiceAccountMaxExpiration: c.ControlPlane.Extra.ServiceAccountMaxExpiration,
-			APIAudiences:                c.ControlPlane.Generic.Authentication.APIAudiences,
-			Informers:                   c.ControlPlane.Extra.VersionedInformers,
-		},
-		Proxy: corerest.ProxyConfig{
-			Transport:           c.ControlPlane.Extra.ProxyTransport,
-			KubeletClientConfig: c.Extra.KubeletClientConfig,
-		},
-		Services: corerest.ServicesConfig{
-			ClusterIPRange:          c.Extra.ServiceIPRange,
-			SecondaryClusterIPRange: c.Extra.SecondaryServiceIPRange,
-			NodePortRange:           c.Extra.ServiceNodePortRange,
-			IPRepairInterval:        c.Extra.RepairServicesInterval,
-		},
-	})
+	restStorageProviders, err := c.StorageProviders(client.Discovery())
 	if err != nil {
 		return nil, err
 	}
 
-	// The order here is preserved in discovery.
-	// If resources with identical names exist in more than one of these groups (e.g. "deployments.apps"" and "deployments.extensions"),
-	// the order of this list determines which group an unqualified resource name (e.g. "deployments") should prefer.
-	// This priority order is used for local discovery, but it ends up aggregated in `k8s.io/kubernetes/cmd/kube-apiserver/app/aggregator.go
-	// with specific priorities.
-	// TODO: describe the priority all the way down in the RESTStorageProviders and plumb it back through the various discovery
-	// handlers that we have.
-	restStorageProviders := []controlplaneapiserver.RESTStorageProvider{
-		legacyRESTStorageProvider,
-		apiserverinternalrest.StorageProvider{},
-		authenticationrest.RESTStorageProvider{Authenticator: c.ControlPlane.Generic.Authentication.Authenticator, APIAudiences: c.ControlPlane.Generic.Authentication.APIAudiences},
-		authorizationrest.RESTStorageProvider{Authorizer: c.ControlPlane.Generic.Authorization.Authorizer, RuleResolver: c.ControlPlane.Generic.RuleResolver},
-		autoscalingrest.RESTStorageProvider{},
-		batchrest.RESTStorageProvider{},
-		certificatesrest.RESTStorageProvider{},
-		coordinationrest.RESTStorageProvider{},
-		discoveryrest.StorageProvider{},
-		networkingrest.RESTStorageProvider{},
-		noderest.RESTStorageProvider{},
-		policyrest.RESTStorageProvider{},
-		rbacrest.RESTStorageProvider{Authorizer: c.ControlPlane.Generic.Authorization.Authorizer},
-		schedulingrest.RESTStorageProvider{},
-		storagerest.RESTStorageProvider{},
-		svmrest.RESTStorageProvider{},
-		flowcontrolrest.RESTStorageProvider{InformerFactory: c.ControlPlane.Generic.SharedInformerFactory},
-		// keep apps after extensions so legacy clients resolve the extensions versions of shared resource names.
-		// See https://github.com/kubernetes/kubernetes/issues/42392
-		appsrest.StorageProvider{},
-		admissionregistrationrest.RESTStorageProvider{Authorizer: c.ControlPlane.Generic.Authorization.Authorizer, DiscoveryClient: discoveryClientForAdmissionRegistration},
-		eventsrest.RESTStorageProvider{TTL: c.ControlPlane.EventTTL},
-		resourcerest.RESTStorageProvider{},
-	}
 	if err := s.ControlPlane.InstallAPIs(restStorageProviders...); err != nil {
 		return nil, err
 	}
@@ -403,7 +350,7 @@ func (c CompletedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		KubernetesServiceNodePort: c.Extra.KubernetesServiceNodePort,
 	}, client, c.ControlPlane.Extra.VersionedInformers.Core().V1().Services())
 	s.ControlPlane.GenericAPIServer.AddPostStartHookOrDie("bootstrap-controller", func(hookContext genericapiserver.PostStartHookContext) error {
-		kubernetesServiceCtrl.Start(hookContext.StopCh)
+		kubernetesServiceCtrl.Start(hookContext.Done())
 		return nil
 	})
 	s.ControlPlane.GenericAPIServer.AddPreShutdownHookOrDie("stop-kubernetes-service-controller", func() error {
@@ -426,6 +373,59 @@ func (c CompletedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	}
 
 	return s, nil
+
+}
+
+func (c CompletedConfig) StorageProviders(discovery clientdiscovery.DiscoveryInterface) ([]controlplaneapiserver.RESTStorageProvider, error) {
+	legacyRESTStorageProvider, err := corerest.New(corerest.Config{
+		GenericConfig: *c.ControlPlane.NewCoreGenericConfig(),
+		Proxy: corerest.ProxyConfig{
+			Transport:           c.ControlPlane.Extra.ProxyTransport,
+			KubeletClientConfig: c.Extra.KubeletClientConfig,
+		},
+		Services: corerest.ServicesConfig{
+			ClusterIPRange:          c.Extra.ServiceIPRange,
+			SecondaryClusterIPRange: c.Extra.SecondaryServiceIPRange,
+			NodePortRange:           c.Extra.ServiceNodePortRange,
+			IPRepairInterval:        c.Extra.RepairServicesInterval,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// The order here is preserved in discovery.
+	// If resources with identical names exist in more than one of these groups (e.g. "deployments.apps"" and "deployments.extensions"),
+	// the order of this list determines which group an unqualified resource name (e.g. "deployments") should prefer.
+	// This priority order is used for local discovery, but it ends up aggregated in `k8s.io/kubernetes/cmd/kube-apiserver/app/aggregator.go
+	// with specific priorities.
+	// TODO: describe the priority all the way down in the RESTStorageProviders and plumb it back through the various discovery
+	// handlers that we have.
+	return []controlplaneapiserver.RESTStorageProvider{
+		legacyRESTStorageProvider,
+		apiserverinternalrest.StorageProvider{},
+		authenticationrest.RESTStorageProvider{Authenticator: c.ControlPlane.Generic.Authentication.Authenticator, APIAudiences: c.ControlPlane.Generic.Authentication.APIAudiences},
+		authorizationrest.RESTStorageProvider{Authorizer: c.ControlPlane.Generic.Authorization.Authorizer, RuleResolver: c.ControlPlane.Generic.RuleResolver},
+		autoscalingrest.RESTStorageProvider{},
+		batchrest.RESTStorageProvider{},
+		certificatesrest.RESTStorageProvider{},
+		coordinationrest.RESTStorageProvider{},
+		discoveryrest.StorageProvider{},
+		networkingrest.RESTStorageProvider{},
+		noderest.RESTStorageProvider{},
+		policyrest.RESTStorageProvider{},
+		rbacrest.RESTStorageProvider{Authorizer: c.ControlPlane.Generic.Authorization.Authorizer},
+		schedulingrest.RESTStorageProvider{},
+		storagerest.RESTStorageProvider{},
+		svmrest.RESTStorageProvider{},
+		flowcontrolrest.RESTStorageProvider{InformerFactory: c.ControlPlane.Generic.SharedInformerFactory},
+		// keep apps after extensions so legacy clients resolve the extensions versions of shared resource names.
+		// See https://github.com/kubernetes/kubernetes/issues/42392
+		appsrest.StorageProvider{},
+		admissionregistrationrest.RESTStorageProvider{Authorizer: c.ControlPlane.Generic.Authorization.Authorizer, DiscoveryClient: discovery},
+		eventsrest.RESTStorageProvider{TTL: c.ControlPlane.EventTTL},
+		resourcerest.RESTStorageProvider{},
+	}, nil
 }
 
 var (
@@ -452,14 +452,6 @@ var (
 		flowcontrolv1.SchemeGroupVersion,
 	}
 
-	// legacyBetaEnabledByDefaultResources is the list of beta resources we enable.  You may only add to this list
-	// if your resource is already enabled by default in a beta level we still serve AND there is no stable API for it.
-	// see https://github.com/kubernetes/enhancements/tree/master/keps/sig-architecture/3136-beta-apis-off-by-default
-	// for more details.
-	legacyBetaEnabledByDefaultResources = []schema.GroupVersionResource{
-		flowcontrolv1beta3.SchemeGroupVersion.WithResource("flowschemas"),                 // deprecate in 1.29, remove in 1.32
-		flowcontrolv1beta3.SchemeGroupVersion.WithResource("prioritylevelconfigurations"), // deprecate in 1.29, remove in 1.32
-	}
 	// betaAPIGroupVersionsDisabledByDefault is for all future beta groupVersions.
 	betaAPIGroupVersionsDisabledByDefault = []schema.GroupVersion{
 		admissionregistrationv1beta1.SchemeGroupVersion,
@@ -468,6 +460,7 @@ var (
 		flowcontrolv1beta1.SchemeGroupVersion,
 		flowcontrolv1beta2.SchemeGroupVersion,
 		flowcontrolv1beta3.SchemeGroupVersion,
+		networkingapiv1beta1.SchemeGroupVersion,
 	}
 
 	// alphaAPIGroupVersionsDisabledByDefault holds the alpha APIs we have.  They are always disabled by default.
@@ -475,7 +468,9 @@ var (
 		admissionregistrationv1alpha1.SchemeGroupVersion,
 		apiserverinternalv1alpha1.SchemeGroupVersion,
 		authenticationv1alpha1.SchemeGroupVersion,
-		resourcev1alpha2.SchemeGroupVersion,
+		apiserverinternalv1alpha1.SchemeGroupVersion,
+		coordinationv1alpha1.SchemeGroupVersion,
+		resourceapi.SchemeGroupVersion,
 		certificatesv1alpha1.SchemeGroupVersion,
 		networkingapiv1alpha1.SchemeGroupVersion,
 		storageapiv1alpha1.SchemeGroupVersion,
@@ -492,9 +487,6 @@ func DefaultAPIResourceConfigSource() *serverstorage.ResourceConfig {
 	// disable alpha and beta versions explicitly so we have a full list of what's possible to serve
 	ret.DisableVersions(betaAPIGroupVersionsDisabledByDefault...)
 	ret.DisableVersions(alphaAPIGroupVersionsDisabledByDefault...)
-
-	// enable the legacy beta resources that were present before stopped serving new beta APIs by default.
-	ret.EnableResources(legacyBetaEnabledByDefaultResources...)
 
 	return ret
 }

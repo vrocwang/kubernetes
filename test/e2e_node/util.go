@@ -47,6 +47,7 @@ import (
 	"k8s.io/component-base/featuregate"
 	internalapi "k8s.io/cri-api/pkg/apis"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
+	remote "k8s.io/cri-client/pkg"
 	"k8s.io/klog/v2"
 	kubeletpodresourcesv1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 	kubeletpodresourcesv1alpha1 "k8s.io/kubelet/pkg/apis/podresources/v1alpha1"
@@ -56,7 +57,6 @@ import (
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/apis/podresources"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
-	"k8s.io/kubernetes/pkg/kubelet/cri/remote"
 	kubeletmetrics "k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/util"
 
@@ -171,7 +171,7 @@ func getCurrentKubeletConfig(ctx context.Context) (*kubeletconfig.KubeletConfigu
 	return e2enodekubelet.GetCurrentKubeletConfig(ctx, framework.TestContext.NodeName, "", false, framework.TestContext.StandaloneMode)
 }
 
-func cleanupPods(f *framework.Framework) {
+func addAfterEachForCleaningUpPods(f *framework.Framework) {
 	ginkgo.AfterEach(func(ctx context.Context) {
 		ginkgo.By("Deleting any Pods created by the test in namespace: " + f.Namespace.Name)
 		l, err := e2epod.NewPodClient(f).List(ctx, metav1.ListOptions{})
@@ -188,7 +188,6 @@ func cleanupPods(f *framework.Framework) {
 
 // Must be called within a Context. Allows the function to modify the KubeletConfiguration during the BeforeEach of the context.
 // The change is reverted in the AfterEach of the context.
-// Returns true on success.
 func tempSetCurrentKubeletConfig(f *framework.Framework, updateFunction func(ctx context.Context, initialConfig *kubeletconfig.KubeletConfiguration)) {
 	var oldCfg *kubeletconfig.KubeletConfiguration
 
@@ -222,7 +221,7 @@ func updateKubeletConfig(ctx context.Context, f *framework.Framework, kubeletCon
 	// wait until the kubelet health check will fail
 	gomega.Eventually(ctx, func() bool {
 		return kubeletHealthCheck(kubeletHealthCheckURL)
-	}, time.Minute, time.Second).Should(gomega.BeFalse())
+	}, time.Minute, time.Second).Should(gomega.BeFalseBecause("expected kubelet health check to be failed"))
 
 	// Delete CPU and memory manager state files to be sure it will not prevent the kubelet restart
 	if deleteStateFiles {
@@ -241,14 +240,14 @@ func waitForKubeletToStart(ctx context.Context, f *framework.Framework) {
 	// wait until the kubelet health check will succeed
 	gomega.Eventually(ctx, func() bool {
 		return kubeletHealthCheck(kubeletHealthCheckURL)
-	}, 2*time.Minute, 5*time.Second).Should(gomega.BeTrue())
+	}, 2*time.Minute, 5*time.Second).Should(gomega.BeTrueBecause("expected kubelet to be in healthy state"))
 
 	// Wait for the Kubelet to be ready.
 	gomega.Eventually(ctx, func(ctx context.Context) bool {
 		nodes, err := e2enode.TotalReady(ctx, f.ClientSet)
 		framework.ExpectNoError(err)
 		return nodes == 1
-	}, time.Minute, time.Second).Should(gomega.BeTrue())
+	}, time.Minute, time.Second).Should(gomega.BeTrueBecause("expected kubelet to be in ready state"))
 }
 
 func deleteStateFile(stateFileName string) {

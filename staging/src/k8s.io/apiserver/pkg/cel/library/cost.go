@@ -17,7 +17,9 @@ limitations under the License.
 package library
 
 import (
+	"fmt"
 	"math"
+	"reflect"
 
 	"github.com/google/cel-go/checker"
 	"github.com/google/cel-go/common"
@@ -25,7 +27,43 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
+
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/cel"
+)
+
+// panicOnUnknown makes cost estimate functions panic on unrecognized functions.
+// This is only set to true for unit tests.
+var panicOnUnknown = false
+
+// builtInFunctions is a list of functions used in cost tests that are not handled by CostEstimator.
+var knownUnhandledFunctions = map[string]bool{
+	"uint":          true,
+	"duration":      true,
+	"bytes":         true,
+	"timestamp":     true,
+	"value":         true,
+	"_==_":          true,
+	"_&&_":          true,
+	"_>_":           true,
+	"!_":            true,
+	"strings.quote": true,
+}
+
+// TODO: Replace this with a utility that extracts types from libraries.
+var knownKubernetesRuntimeTypes = sets.New[reflect.Type](
+	reflect.ValueOf(cel.URL{}).Type(),
+	reflect.ValueOf(cel.IP{}).Type(),
+	reflect.ValueOf(cel.CIDR{}).Type(),
+	reflect.ValueOf(&cel.Format{}).Type(),
+	reflect.ValueOf(cel.Quantity{}).Type(),
+)
+var knownKubernetesCompilerTypes = sets.New[ref.Type](
+	cel.CIDRType,
+	cel.IPType,
+	cel.FormatType,
+	cel.QuantityType,
+	cel.URLType,
 )
 
 // CostEstimator implements CEL's interpretable.ActualCostEstimator and checker.CostEstimator.
@@ -33,6 +71,25 @@ type CostEstimator struct {
 	// SizeEstimator provides a CostEstimator.EstimateSize that this CostEstimator will delegate size estimation
 	// calculations to if the size is not well known (i.e. a constant).
 	SizeEstimator checker.CostEstimator
+}
+
+const (
+	// shortest repeatable selector requirement that allocates a values slice is 2 characters: k,
+	selectorLengthToRequirementCount = float64(.5)
+	// the expensive parts to represent each requirement are a struct and a values slice
+	costPerRequirement = float64(common.ListCreateBaseCost + common.StructCreateBaseCost)
+)
+
+// a selector consists of a list of requirements held in a slice
+var baseSelectorCost = checker.CostEstimate{Min: common.ListCreateBaseCost, Max: common.ListCreateBaseCost}
+
+func selectorCostEstimate(selectorLength checker.SizeEstimate) checker.CostEstimate {
+	parseCost := selectorLength.MultiplyByCostFactor(common.StringTraversalCostFactor)
+
+	requirementCount := selectorLength.MultiplyByCostFactor(selectorLengthToRequirementCount)
+	requirementCost := requirementCount.MultiplyByCostFactor(costPerRequirement)
+
+	return baseSelectorCost.Add(parseCost).Add(requirementCost)
 }
 
 func (l *CostEstimator) CallCost(function, overloadId string, args []ref.Val, result ref.Val) *uint64 {
@@ -46,6 +103,13 @@ func (l *CostEstimator) CallCost(function, overloadId string, args []ref.Val, re
 		// All authorization builder and accessor functions have a nominal cost
 		cost := uint64(1)
 		return &cost
+	case "fieldSelector", "labelSelector":
+		// field and label selector parse is a string parse into a structured set of requirements
+		if len(args) >= 2 {
+			selectorLength := actualSize(args[1])
+			cost := selectorCostEstimate(checker.SizeEstimate{Min: selectorLength, Max: selectorLength})
+			return &cost.Max
+		}
 	case "isSorted", "sum", "max", "min", "indexOf", "lastIndexOf":
 		var cost uint64
 		if len(args) > 0 {
@@ -106,7 +170,7 @@ func (l *CostEstimator) CallCost(function, overloadId string, args []ref.Val, re
 			cost := uint64(math.Ceil(float64(actualSize(args[0])) * 2 * common.StringTraversalCostFactor))
 			return &cost
 		}
-	case "masked", "prefixLength", "family", "isUnspecified", "isLoopback", "isLinkLocalMulticast", "isLinkLocalUnicast":
+	case "masked", "prefixLength", "family", "isUnspecified", "isLoopback", "isLinkLocalMulticast", "isLinkLocalUnicast", "isGlobalUnicast":
 		// IP and CIDR accessors are nominal cost.
 		cost := uint64(1)
 		return &cost
@@ -185,6 +249,34 @@ func (l *CostEstimator) CallCost(function, overloadId string, args []ref.Val, re
 	case "sign", "asInteger", "isInteger", "asApproximateFloat", "isGreaterThan", "isLessThan", "compareTo", "add", "sub":
 		cost := uint64(1)
 		return &cost
+	case "getScheme", "getHostname", "getHost", "getPort", "getEscapedPath", "getQuery":
+		// url accessors
+		cost := uint64(1)
+		return &cost
+	case "_==_":
+		if len(args) == 2 {
+			unitCost := uint64(1)
+			lhs := args[0]
+			switch lhs.(type) {
+			case cel.Quantity:
+				return &unitCost
+			case cel.IP:
+				return &unitCost
+			case cel.CIDR:
+				return &unitCost
+			case *cel.Format: // Formats have a small max size.
+				return &unitCost
+			case cel.URL: // TODO: Computing the actual cost is expensive, and changing this would be a breaking change
+				return &unitCost
+			default:
+				if panicOnUnknown && knownKubernetesRuntimeTypes.Has(reflect.ValueOf(lhs).Type()) {
+					panic(fmt.Errorf("CallCost: unhandled equality for Kubernetes type %T", lhs))
+				}
+			}
+		}
+	}
+	if panicOnUnknown && !knownUnhandledFunctions[function] {
+		panic(fmt.Errorf("CallCost: unhandled function %q or args %v", function, args))
 	}
 	return nil
 }
@@ -200,6 +292,11 @@ func (l *CostEstimator) EstimateCallCost(function, overloadId string, target *ch
 	case "serviceAccount", "path", "group", "resource", "subresource", "namespace", "name", "allowed", "reason", "error", "errored":
 		// All authorization builder and accessor functions have a nominal cost
 		return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
+	case "fieldSelector", "labelSelector":
+		// field and label selector parse is a string parse into a structured set of requirements
+		if len(args) == 1 {
+			return &checker.CallEstimate{CostEstimate: selectorCostEstimate(l.sizeEstimate(args[0]))}
+		}
 	case "isSorted", "sum", "max", "min", "indexOf", "lastIndexOf":
 		if target != nil {
 			// Charge 1 cost for comparing each element in the list
@@ -220,7 +317,7 @@ func (l *CostEstimator) EstimateCallCost(function, overloadId string, target *ch
 	case "url":
 		if len(args) == 1 {
 			sz := l.sizeEstimate(args[0])
-			return &checker.CallEstimate{CostEstimate: sz.MultiplyByCostFactor(common.StringTraversalCostFactor)}
+			return &checker.CallEstimate{CostEstimate: sz.MultiplyByCostFactor(common.StringTraversalCostFactor), ResultSize: &sz}
 		}
 	case "lowerAscii", "upperAscii", "substring", "trim":
 		if target != nil {
@@ -359,7 +456,7 @@ func (l *CostEstimator) EstimateCallCost(function, overloadId string, target *ch
 			// So we double the cost of parsing the string.
 			return &checker.CallEstimate{CostEstimate: sz.MultiplyByCostFactor(2 * common.StringTraversalCostFactor)}
 		}
-	case "masked", "prefixLength", "family", "isUnspecified", "isLoopback", "isLinkLocalMulticast", "isLinkLocalUnicast":
+	case "masked", "prefixLength", "family", "isUnspecified", "isLoopback", "isLinkLocalMulticast", "isLinkLocalUnicast", "isGlobalUnicast":
 		// IP and CIDR accessors are nominal cost.
 		return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
 	case "containsIP":
@@ -414,6 +511,45 @@ func (l *CostEstimator) EstimateCallCost(function, overloadId string, target *ch
 		return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
 	case "sign", "asInteger", "isInteger", "asApproximateFloat", "isGreaterThan", "isLessThan", "compareTo", "add", "sub":
 		return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
+	case "getScheme", "getHostname", "getHost", "getPort", "getEscapedPath", "getQuery":
+		// url accessors
+		return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
+	case "_==_":
+		if len(args) == 2 {
+			lhs := args[0]
+			rhs := args[1]
+			if lhs.Type().Equal(rhs.Type()) == types.True {
+				t := lhs.Type()
+				if t.Kind() == types.OpaqueKind {
+					switch t.TypeName() {
+					case cel.IPType.TypeName(), cel.CIDRType.TypeName():
+						return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
+					}
+				}
+				if t.Kind() == types.StructKind {
+					switch t {
+					case cel.QuantityType: // O(1) cost equality checks
+						return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: 1}}
+					case cel.FormatType:
+						return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: cel.MaxFormatSize}.MultiplyByCostFactor(common.StringTraversalCostFactor)}
+					case cel.URLType:
+						size := checker.SizeEstimate{Min: 1, Max: 1}
+						rhSize := rhs.ComputedSize()
+						lhSize := rhs.ComputedSize()
+						if rhSize != nil && lhSize != nil {
+							size = rhSize.Union(*lhSize)
+						}
+						return &checker.CallEstimate{CostEstimate: checker.CostEstimate{Min: 1, Max: size.Max}.MultiplyByCostFactor(common.StringTraversalCostFactor)}
+					}
+				}
+				if panicOnUnknown && knownKubernetesCompilerTypes.Has(t) {
+					panic(fmt.Errorf("EstimateCallCost: unhandled equality for Kubernetes type %v", t))
+				}
+			}
+		}
+	}
+	if panicOnUnknown && !knownUnhandledFunctions[function] {
+		panic(fmt.Errorf("EstimateCallCost: unhandled function %q, target %v, args %v", function, target, args))
 	}
 	return nil
 }
@@ -421,6 +557,10 @@ func (l *CostEstimator) EstimateCallCost(function, overloadId string, target *ch
 func actualSize(value ref.Val) uint64 {
 	if sz, ok := value.(traits.Sizer); ok {
 		return uint64(sz.Size().(types.Int))
+	}
+	if panicOnUnknown {
+		// debug.PrintStack()
+		panic(fmt.Errorf("actualSize: non-sizer type %T", value))
 	}
 	return 1
 }

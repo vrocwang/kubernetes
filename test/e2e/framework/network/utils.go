@@ -46,7 +46,6 @@ import (
 	e2epodoutput "k8s.io/kubernetes/test/e2e/framework/pod/output"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
-	storageutils "k8s.io/kubernetes/test/e2e/storage/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	netutils "k8s.io/utils/net"
 )
@@ -264,8 +263,30 @@ func (config *NetworkingTestConfig) diagnoseMissingEndpoints(foundEndpoints sets
 func (config *NetworkingTestConfig) EndpointHostnames() sets.String {
 	expectedEps := sets.NewString()
 	for _, p := range config.EndpointPods {
+
 		if config.EndpointsHostNetwork {
-			expectedEps.Insert(p.Spec.NodeSelector["kubernetes.io/hostname"])
+			// Hostname behavior for hostNetwork pods is not well defined and when
+			// using the flag hostname-override in the kubelet, the node reported
+			// hostname on host network pods will not match the node's hostanme.
+			// It seems that the node.status.addresses hostname value is the only
+			// one that matches the value returned by os.Hostname
+			// used by the agnhost web handler, so we'll use that value.
+			// If by any circumstances the node does not provide that hostnae address
+			// we use the value of the node name.
+			// xref: https://issues.k8s.io/126087
+			hostname := p.Spec.NodeSelector["kubernetes.io/hostname"]
+			for _, n := range config.Nodes {
+				if n.Name == p.Spec.NodeSelector["kubernetes.io/hostname"] {
+					for _, address := range n.Status.Addresses {
+						if address.Type == v1.NodeHostName {
+							hostname = address.Address
+							break
+						}
+					}
+					break
+				}
+			}
+			expectedEps.Insert(hostname)
 		} else {
 			expectedEps.Insert(p.Name)
 		}
@@ -328,20 +349,7 @@ func (config *NetworkingTestConfig) DialFromContainer(ctx context.Context, proto
 		}
 		if responses.Difference(expectedResponses).Len() > 0 {
 			returnMsg := fmt.Errorf("received unexpected responses... \nAttempt %d\nCommand %v\nretrieved %v\nexpected %v", i, cmd, responses, expectedResponses)
-			// TODO(aojea) Remove once issues.k8s.io/123760 is solved
-			// Dump the nodes network routes and addresses for troubleshooting #123760
 			framework.Logf("encountered error during dial (%v)", returnMsg)
-			hostExec := storageutils.NewHostExec(config.f)
-			ginkgo.DeferCleanup(hostExec.Cleanup)
-			cmd := `echo "IP routes: " && ip route && echo "IP addresses:" && ip addr && echo "Open sockets: " && ss -anp --socket=tcp`
-			for _, node := range config.Nodes {
-				result, err := hostExec.IssueCommandWithResult(ctx, cmd, &node)
-				if err != nil {
-					framework.Logf("error occurred while executing command %s on node: %v", cmd, err)
-					continue
-				}
-				framework.Logf("Dump network information for node %s:\n%s", node.Name, result)
-			}
 			return returnMsg
 		}
 
@@ -436,9 +444,8 @@ func (config *NetworkingTestConfig) GetResponseFromTestContainer(ctx context.Con
 
 // GetHTTPCodeFromTestContainer executes a curl via kubectl exec in a test container and returns the status code.
 func (config *NetworkingTestConfig) GetHTTPCodeFromTestContainer(ctx context.Context, path, targetIP string, targetPort int) (int, error) {
-	cmd := fmt.Sprintf("curl -g -q -s -o /dev/null -w %%{http_code} http://%s:%d%s",
-		targetIP,
-		targetPort,
+	cmd := fmt.Sprintf("curl -g -q -s -o /dev/null -w %%{http_code} http://%s%s",
+		net.JoinHostPort(targetIP, strconv.Itoa(targetPort)),
 		path)
 	stdout, stderr, err := e2epod.ExecShellInPodWithFullOutput(ctx, config.f, config.TestContainerPod.Name, cmd)
 	// We only care about the status code reported by curl,
@@ -1170,7 +1177,7 @@ func UnblockNetwork(ctx context.Context, from string, to string) {
 	// not coming back. Subsequent tests will run or fewer nodes (some of the tests
 	// may fail). Manual intervention is required in such case (recreating the
 	// cluster solves the problem too).
-	err := wait.PollWithContext(ctx, time.Millisecond*100, time.Second*30, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, time.Millisecond*100, time.Second*30, false, func(ctx context.Context) (bool, error) {
 		result, err := e2essh.SSH(ctx, undropCmd, from, framework.TestContext.Provider)
 		if result.Code == 0 && err == nil {
 			return true, nil

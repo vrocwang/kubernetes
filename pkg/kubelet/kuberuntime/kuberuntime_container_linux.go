@@ -180,6 +180,11 @@ func (m *kubeGenericRuntimeManager) configureContainerSwapResources(lcr *runtime
 		return
 	}
 
+	if kubelettypes.IsCriticalPod(pod) {
+		swapConfigurationHelper.ConfigureNoSwap(lcr)
+		return
+	}
+
 	// NOTE(ehashman): Behavior is defined in the opencontainers runtime spec:
 	// https://github.com/opencontainers/runtime-spec/blob/1c3f411f041711bbeecf35ff7e93461ea6789220/config-linux.md#memory
 	switch m.memorySwapBehavior {
@@ -436,4 +441,21 @@ func calcSwapForBurstablePods(containerMemoryRequest, nodeTotalMemory, totalPods
 	swapAllocation := containerMemoryProportion * float64(totalPodsSwapAvailable)
 
 	return int64(swapAllocation), nil
+}
+
+func toKubeContainerUser(statusUser *runtimeapi.ContainerUser) *kubecontainer.ContainerUser {
+	if statusUser == nil {
+		return nil
+	}
+
+	user := &kubecontainer.ContainerUser{}
+	if statusUser.GetLinux() != nil {
+		user.Linux = &kubecontainer.LinuxContainerUser{
+			UID:                statusUser.GetLinux().GetUid(),
+			GID:                statusUser.GetLinux().GetGid(),
+			SupplementalGroups: statusUser.GetLinux().GetSupplementalGroups(),
+		}
+	}
+
+	return user
 }

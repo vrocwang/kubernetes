@@ -206,6 +206,16 @@ func TestURLsCost(t *testing.T) {
 			expectEsimatedCost: checker.CostEstimate{Min: 4, Max: 4},
 			expectRuntimeCost:  4,
 		},
+		{
+			ops:                []string{" == url('https:://kubernetes.io/')"},
+			expectEsimatedCost: checker.CostEstimate{Min: 7, Max: 9},
+			expectRuntimeCost:  7,
+		},
+		{
+			ops:                []string{" == url('http://x.b')"},
+			expectEsimatedCost: checker.CostEstimate{Min: 5, Max: 5},
+			expectRuntimeCost:  5,
+		},
 	}
 
 	for _, tc := range cases {
@@ -244,6 +254,14 @@ func TestIPCost(t *testing.T) {
 				return checker.CostEstimate{Min: c.Min + 1, Max: c.Max + 1}
 			},
 			expectRuntimeCost: func(c uint64) uint64 { return c + 1 },
+		},
+		{
+			ops: []string{" == ip('192.168.0.1')"},
+			// For most other operations, the cost is expected to be the base + 1.
+			expectEsimatedCost: func(c checker.CostEstimate) checker.CostEstimate {
+				return c.Add(ipv4BaseEstimatedCost).Add(checker.CostEstimate{Min: 1, Max: 1})
+			},
+			expectRuntimeCost: func(c uint64) uint64 { return c + ipv4BaseRuntimeCost + 1 },
 		},
 	}
 
@@ -319,6 +337,14 @@ func TestCIDRCost(t *testing.T) {
 				return checker.CostEstimate{Min: c.Min + 1, Max: c.Max + 1}
 			},
 			expectRuntimeCost: func(c uint64) uint64 { return c + 1 },
+		},
+		{
+			ops: []string{" == cidr('2001:db8::/32')"},
+			// For most other operations, the cost is expected to be the base + 1.
+			expectEsimatedCost: func(c checker.CostEstimate) checker.CostEstimate {
+				return c.Add(ipv6BaseEstimatedCost).Add(checker.CostEstimate{Min: 1, Max: 1})
+			},
+			expectRuntimeCost: func(c uint64) uint64 { return c + ipv6BaseRuntimeCost + 1 },
 		},
 	}
 
@@ -630,6 +656,18 @@ func TestAuthzLibrary(t *testing.T) {
 			expectRuntimeCost:   6,
 		},
 		{
+			name:                "fieldSelector",
+			expr:                "authorizer.group('').resource('pods').fieldSelector('spec.nodeName=example-node-name.fully.qualified.domain.name.example.com')",
+			expectEstimatedCost: checker.CostEstimate{Min: 1821, Max: 1821},
+			expectRuntimeCost:   1821, // authorizer(1) + group(1) + resource(1) + fieldSelector(10 + ceil(71/2)*50=1800 + ceil(71*.1)=8)
+		},
+		{
+			name:                "labelSelector",
+			expr:                "authorizer.group('').resource('pods').labelSelector('spec.nodeName=example-node-name.fully.qualified.domain.name.example.com')",
+			expectEstimatedCost: checker.CostEstimate{Min: 1821, Max: 1821},
+			expectRuntimeCost:   1821, // authorizer(1) + group(1) + resource(1) + fieldSelector(10 + ceil(71/2)*50=1800 + ceil(71*.1)=8)
+		},
+		{
 			name:                "path check allowed",
 			expr:                "authorizer.path('/healthz').check('get').allowed()",
 			expectEstimatedCost: checker.CostEstimate{Min: 350003, Max: 350003},
@@ -696,19 +734,19 @@ func TestQuantityCost(t *testing.T) {
 		{
 			name:                "equality_reflexivity",
 			expr:                `quantity("200M") == quantity("200M")`,
-			expectEstimatedCost: checker.CostEstimate{Min: 3, Max: 1844674407370955266},
+			expectEstimatedCost: checker.CostEstimate{Min: 3, Max: 3},
 			expectRuntimeCost:   3,
 		},
 		{
 			name:                "equality_symmetry",
 			expr:                `quantity("200M") == quantity("0.2G") && quantity("0.2G") == quantity("200M")`,
-			expectEstimatedCost: checker.CostEstimate{Min: 3, Max: 3689348814741910532},
+			expectEstimatedCost: checker.CostEstimate{Min: 3, Max: 6},
 			expectRuntimeCost:   6,
 		},
 		{
 			name:                "equality_transitivity",
 			expr:                `quantity("2M") == quantity("0.002G") && quantity("2000k") == quantity("2M") && quantity("0.002G") == quantity("2000k")`,
-			expectEstimatedCost: checker.CostEstimate{Min: 3, Max: 5534023222112865798},
+			expectEstimatedCost: checker.CostEstimate{Min: 3, Max: 9},
 			expectRuntimeCost:   9,
 		},
 		{
@@ -732,19 +770,19 @@ func TestQuantityCost(t *testing.T) {
 		{
 			name:                "add_quantity",
 			expr:                `quantity("50k").add(quantity("20")) == quantity("50.02k")`,
-			expectEstimatedCost: checker.CostEstimate{Min: 5, Max: 1844674407370955268},
+			expectEstimatedCost: checker.CostEstimate{Min: 5, Max: 5},
 			expectRuntimeCost:   5,
 		},
 		{
 			name:                "sub_quantity",
 			expr:                `quantity("50k").sub(quantity("20")) == quantity("49.98k")`,
-			expectEstimatedCost: checker.CostEstimate{Min: 5, Max: 1844674407370955268},
+			expectEstimatedCost: checker.CostEstimate{Min: 5, Max: 5},
 			expectRuntimeCost:   5,
 		},
 		{
 			name:                "sub_int",
 			expr:                `quantity("50k").sub(20) == quantity("49980")`,
-			expectEstimatedCost: checker.CostEstimate{Min: 4, Max: 1844674407370955267},
+			expectEstimatedCost: checker.CostEstimate{Min: 4, Max: 4},
 			expectRuntimeCost:   4,
 		},
 		{
@@ -812,6 +850,18 @@ func TestNameFormatCost(t *testing.T) {
 			expr:                `format.named("dns1123Label").value().validate("my-name")`,
 			expectEstimatedCost: checker.CostEstimate{Min: 34, Max: 34},
 			expectRuntimeCost:   10,
+		},
+		{
+			name:                "format.dns1123label.validate",
+			expr:                `format.named("dns1123Label").value().validate("my-name")`,
+			expectEstimatedCost: checker.CostEstimate{Min: 34, Max: 34},
+			expectRuntimeCost:   10,
+		},
+		{
+			name:                "format.dns1123label.validate",
+			expr:                `format.named("dns1123Label").value() == format.named("dns1123Label").value()`,
+			expectEstimatedCost: checker.CostEstimate{Min: 5, Max: 11},
+			expectRuntimeCost:   5,
 		},
 	}
 
@@ -1053,6 +1103,10 @@ func TestSetsCost(t *testing.T) {
 }
 
 func testCost(t *testing.T, expr string, expectEsimatedCost checker.CostEstimate, expectRuntimeCost uint64) {
+	originalPanicOnUnknown := panicOnUnknown
+	panicOnUnknown = true
+	t.Cleanup(func() { panicOnUnknown = originalPanicOnUnknown })
+
 	est := &CostEstimator{SizeEstimator: &testCostEstimator{}}
 	env, err := cel.NewEnv(
 		ext.Strings(ext.StringsVersion(2)),
@@ -1060,6 +1114,7 @@ func testCost(t *testing.T, expr string, expectEsimatedCost checker.CostEstimate
 		Regex(),
 		Lists(),
 		Authz(),
+		AuthzSelectors(),
 		Quantity(),
 		ext.Sets(),
 		IP(),
@@ -1168,6 +1223,11 @@ func TestSize(t *testing.T) {
 			expectSize: checker.SizeEstimate{Min: 2, Max: 4},
 		},
 	}
+
+	originalPanicOnUnknown := panicOnUnknown
+	panicOnUnknown = true
+	t.Cleanup(func() { panicOnUnknown = originalPanicOnUnknown })
+
 	est := &CostEstimator{SizeEstimator: &testCostEstimator{}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

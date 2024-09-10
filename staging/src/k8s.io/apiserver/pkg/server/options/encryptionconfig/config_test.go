@@ -232,6 +232,12 @@ func TestEncryptionProviderConfigCorrect(t *testing.T) {
 		t.Fatalf("should result in error while parsing configuration file: %s.\nThe file was:\n%s", err, invalidConfigWithAesGcm)
 	}
 
+	invalidConfigWithTypo := "testdata/invalid-configs/invalid-typo.yaml"
+	_, err = LoadEncryptionConfig(ctx, invalidConfigWithTypo, false, "")
+	if got, wantSubString := errString(err), `strict decoding error: unknown field "resources[0].providers[3].kms.pandas"`; !strings.Contains(got, wantSubString) {
+		t.Fatalf("should result in strict decode error while parsing configuration file %q:\ngot: %q\nwant substring: %q", invalidConfigWithTypo, got, wantSubString)
+	}
+
 	// Math for GracePeriod is explained at - https://github.com/kubernetes/kubernetes/blob/c9ed04762f94a319d7b1fb718dc345491a32bea6/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L159-L163
 	expectedKMSCloseGracePeriod = 26 * time.Second
 	correctConfigWithAesCbcFirst := "testdata/valid-configs/aes-cbc-first.yaml"
@@ -385,15 +391,13 @@ func TestKMSvsEnablement(t *testing.T) {
 	}
 	tts := []struct {
 		name            string
-		kmsv2Enabled    bool
 		expectedErr     string
 		expectedTimeout time.Duration
 		config          apiserver.EncryptionConfiguration
 		wantV2Used      bool
 	}{
 		{
-			name:         "with kmsv1 and kmsv2, KMSv2=true",
-			kmsv2Enabled: true,
+			name: "with kmsv1 and kmsv2, KMSv2=true",
 			config: apiserver.EncryptionConfiguration{
 				Resources: []apiserver.ResourceConfiguration{
 					{
@@ -434,8 +438,6 @@ func TestKMSvsEnablement(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Just testing KMSv2 feature flag
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.KMSv1, true)
-
-			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.KMSv2, tt.kmsv2Enabled)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel() // cancel this upfront so the kms v2 checks do not block
@@ -1422,7 +1424,15 @@ func TestWildcardStructure(t *testing.T) {
 			for resource, expectedTransformerName := range tc.expectedResourceTransformers {
 				transformer := transformerFromOverrides(transformers, schema.ParseGroupResource(resource))
 				transformerName := string(
-					reflect.ValueOf(transformer).Elem().FieldByName("transformers").Index(0).FieldByName("Prefix").Bytes(),
+					reflect.ValueOf(transformer).
+						Elem().
+						FieldByName("delegate").
+						Elem().
+						Elem().
+						FieldByName("transformers").
+						Index(0).
+						FieldByName("Prefix").
+						Bytes(),
 				)
 
 				if transformerName != expectedTransformerName {

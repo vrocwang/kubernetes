@@ -47,3 +47,10 @@ const IPVSConnReuseModeFixedKernelVersion = "5.9"
 // UserNamespacesSupportKernelVersion is the kernel version where idmap for tmpfs support was added
 // (ref: https://github.com/torvalds/linux/commit/05e6295f7b5e05f09e369a3eb2882ec5b40fff20)
 const UserNamespacesSupportKernelVersion = "6.3"
+
+const TmpfsNoswapSupportKernelVersion = "6.4"
+
+// NFTablesKubeProxyKernelVersion is the lowest kernel version kube-proxy supports using
+// nftables mode with by default. This is not directly related to any specific kernel
+// commit; see https://issues.k8s.io/122743#issuecomment-1893922424
+const NFTablesKubeProxyKernelVersion = "5.13"

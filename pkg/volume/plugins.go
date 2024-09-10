@@ -82,8 +82,6 @@ type VolumeOptions struct {
 	// i.e. with required capacity, accessMode, labels matching PVC.Selector and
 	// so on.
 	PVC *v1.PersistentVolumeClaim
-	// Unique name of Kubernetes cluster.
-	ClusterName string
 	// Volume provisioning parameters from StorageClass
 	Parameters map[string]string
 }
@@ -151,7 +149,7 @@ type VolumePlugin interface {
 	// Ownership of the spec pointer in *not* transferred.
 	// - spec: The v1.Volume spec
 	// - pod: The enclosing pod
-	NewMounter(spec *Spec, podRef *v1.Pod, opts VolumeOptions) (Mounter, error)
+	NewMounter(spec *Spec, podRef *v1.Pod) (Mounter, error)
 
 	// NewUnmounter creates a new volume.Unmounter from recoverable state.
 	// - name: The volume name, as per the v1.Volume spec.
@@ -168,11 +166,6 @@ type VolumePlugin interface {
 	// Specifying mount options in a volume plugin that doesn't support
 	// user specified mount options will result in error creating persistent volumes
 	SupportsMountOption() bool
-
-	// SupportsBulkVolumeVerification checks if volume plugin type is capable
-	// of enabling bulk polling of all nodes. This can speed up verification of
-	// attached volumes by quite a bit, but underlying pluging must support it.
-	SupportsBulkVolumeVerification() bool
 
 	// SupportsSELinuxContextMount returns true if volume plugins supports
 	// mount -o context=XYZ for a given volume.
@@ -267,7 +260,7 @@ type BlockVolumePlugin interface {
 	// Ownership of the spec pointer in *not* transferred.
 	// - spec: The v1.Volume spec
 	// - pod: The enclosing pod
-	NewBlockVolumeMapper(spec *Spec, podRef *v1.Pod, opts VolumeOptions) (BlockVolumeMapper, error)
+	NewBlockVolumeMapper(spec *Spec, podRef *v1.Pod) (BlockVolumeMapper, error)
 	// NewBlockVolumeUnmapper creates a new volume.BlockVolumeUnmapper from recoverable state.
 	// - name: The volume name, as per the v1.Volume spec.
 	// - podUID: The UID of the enclosing pod
@@ -372,7 +365,7 @@ type VolumeHost interface {
 	// the provided spec.  This is used to implement volume plugins which
 	// "wrap" other plugins.  For example, the "secret" volume is
 	// implemented in terms of the "emptyDir" volume.
-	NewWrapperMounter(volName string, spec Spec, pod *v1.Pod, opts VolumeOptions) (Mounter, error)
+	NewWrapperMounter(volName string, spec Spec, pod *v1.Pod) (Mounter, error)
 
 	// NewWrapperUnmounter finds an appropriate plugin with which to handle
 	// the provided spec.  See comments on NewWrapperMounter for more
@@ -425,7 +418,7 @@ type VolumePluginMgr struct {
 	plugins                   map[string]VolumePlugin
 	prober                    DynamicPluginProber
 	probedPlugins             map[string]VolumePlugin
-	loggedDeprecationWarnings sets.String
+	loggedDeprecationWarnings sets.Set[string]
 	Host                      VolumeHost
 }
 
@@ -567,7 +560,7 @@ func (pm *VolumePluginMgr) InitPlugins(plugins []VolumePlugin, prober DynamicPlu
 	defer pm.mutex.Unlock()
 
 	pm.Host = host
-	pm.loggedDeprecationWarnings = sets.NewString()
+	pm.loggedDeprecationWarnings = sets.New[string]()
 
 	if prober == nil {
 		// Use a dummy prober to prevent nil deference.
@@ -798,19 +791,6 @@ func (pm *VolumePluginMgr) FindDeletablePluginByName(name string) (DeletableVolu
 	return nil, fmt.Errorf("no deletable volume plugin matched")
 }
 
-// FindCreatablePluginBySpec fetches a persistent volume plugin by name.  If
-// no plugin is found, returns error.
-func (pm *VolumePluginMgr) FindCreatablePluginBySpec(spec *Spec) (ProvisionableVolumePlugin, error) {
-	volumePlugin, err := pm.FindPluginBySpec(spec)
-	if err != nil {
-		return nil, err
-	}
-	if provisionableVolumePlugin, ok := volumePlugin.(ProvisionableVolumePlugin); ok {
-		return provisionableVolumePlugin, nil
-	}
-	return nil, fmt.Errorf("no creatable volume plugin matched")
-}
-
 // FindAttachablePluginBySpec fetches a persistent volume plugin by spec.
 // Unlike the other "FindPlugin" methods, this does not return error if no
 // plugin is found.  All volumes require a mounter and unmounter, but not
@@ -1004,7 +984,7 @@ func NewPersistentVolumeRecyclerPodTemplate() *v1.Pod {
 			Containers: []v1.Container{
 				{
 					Name:    "pv-recycler",
-					Image:   "registry.k8s.io/build-image/debian-base:bookworm-v1.0.2",
+					Image:   "registry.k8s.io/build-image/debian-base:bookworm-v1.0.4",
 					Command: []string{"/bin/sh"},
 					Args:    []string{"-c", "test -e /scrub && find /scrub -mindepth 1 -delete && test -z \"$(ls -A /scrub)\" || exit 1"},
 					VolumeMounts: []v1.VolumeMount{

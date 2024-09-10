@@ -152,7 +152,7 @@ func (f *fakeVolumeHost) GetAttachedVolumesFromNodeStatus() (map[v1.UniqueVolume
 	return map[v1.UniqueVolumeName]string{}, nil
 }
 
-func (f *fakeVolumeHost) NewWrapperMounter(volName string, spec Spec, pod *v1.Pod, opts VolumeOptions) (Mounter, error) {
+func (f *fakeVolumeHost) NewWrapperMounter(volName string, spec Spec, pod *v1.Pod) (Mounter, error) {
 	// The name of wrapper volume is set to "wrapped_{wrapped_volume_name}"
 	wrapperVolumeName := "wrapped_" + volName
 	if spec.Volume != nil {
@@ -162,7 +162,7 @@ func (f *fakeVolumeHost) NewWrapperMounter(volName string, spec Spec, pod *v1.Po
 	if err != nil {
 		return nil, err
 	}
-	return plug.NewMounter(&spec, pod, opts)
+	return plug.NewMounter(&spec, pod)
 }
 
 func (f *fakeVolumeHost) NewWrapperUnmounter(volName string, spec Spec, podUID types.UID) (Unmounter, error) {
@@ -296,9 +296,9 @@ func enableMigrationOnNode(csiNode *storagev1.CSINode, pluginName string) {
 		nodeInfoAnnotations = map[string]string{}
 	}
 
-	newAnnotationSet := sets.NewString()
+	newAnnotationSet := sets.New[string]()
 	newAnnotationSet.Insert(pluginName)
-	nas := strings.Join(newAnnotationSet.List(), ",")
+	nas := strings.Join(sets.List(newAnnotationSet), ",")
 	nodeInfoAnnotations[v1.MigratedPluginsAnnotationKey] = nas
 
 	csiNode.Annotations = nodeInfoAnnotations

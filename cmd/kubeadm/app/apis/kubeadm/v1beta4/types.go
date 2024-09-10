@@ -371,7 +371,7 @@ type JoinConfiguration struct {
 	NodeRegistration NodeRegistrationOptions `json:"nodeRegistration,omitempty"`
 
 	// CACertPath is the path to the SSL certificate authority used to
-	// secure comunications between node and control-plane.
+	// secure communications between node and control-plane.
 	// Defaults to "/etc/kubernetes/pki/ca.crt".
 	// +optional
 	CACertPath string `json:"caCertPath,omitempty"`
@@ -487,7 +487,7 @@ type HostPathMount struct {
 type Patches struct {
 	// Directory is a path to a directory that contains files named "target[suffix][+patchtype].extension".
 	// For example, "kube-apiserver0+merge.yaml" or just "etcd.json". "target" can be one of
-	// "kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd", "kubeletconfiguration".
+	// "kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd", "kubeletconfiguration", "corednsdeployment".
 	// "patchtype" can be one of "strategic" "merge" or "json" and they match the patch formats supported by kubectl.
 	// The default "patchtype" is "strategic". "extension" must be either "json" or "yaml".
 	// "suffix" is an optional string that can be used to determine which patches are applied
@@ -607,7 +607,7 @@ type Timeouts struct {
 	// +optional
 	Discovery *metav1.Duration `json:"discovery,omitempty"`
 
-	// UpgradeManifests is the timeout for upgradring static Pod manifests
+	// UpgradeManifests is the timeout for upgrading static Pod manifests.
 	// Default: 5m
 	UpgradeManifests *metav1.Duration `json:"upgradeManifests,omitempty"`
 }
@@ -662,7 +662,18 @@ type UpgradeApplyConfiguration struct {
 
 	// SkipPhases is a list of phases to skip during command execution.
 	// NOTE: This field is currently ignored for "kubeadm upgrade apply", but in the future it will be supported.
-	SkipPhases []string
+	SkipPhases []string `json:"skipPhases,omitempty"`
+
+	// ImagePullPolicy specifies the policy for image pulling during kubeadm "upgrade apply" operations.
+	// The value of this field must be one of "Always", "IfNotPresent" or "Never".
+	// If this field is unset kubeadm will default it to "IfNotPresent", or pull the required images if not present on the host.
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
+	// ImagePullSerial specifies if image pulling performed by kubeadm must be done serially or in parallel.
+	// Default: true
+	// +optional
+	ImagePullSerial *bool `json:"imagePullSerial,omitempty"`
 }
 
 // UpgradeDiffConfiguration contains a list of configurable options which are specific to the "kubeadm upgrade diff" command.
@@ -705,6 +716,17 @@ type UpgradeNodeConfiguration struct {
 	// Patches contains options related to applying patches to components deployed by kubeadm during "kubeadm upgrade".
 	// +optional
 	Patches *Patches `json:"patches,omitempty"`
+
+	// ImagePullPolicy specifies the policy for image pulling during kubeadm "upgrade node" operations.
+	// The value of this field must be one of "Always", "IfNotPresent" or "Never".
+	// If this field is unset kubeadm will default it to "IfNotPresent", or pull the required images if not present on the host.
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
+	// ImagePullSerial specifies if image pulling performed by kubeadm must be done serially or in parallel.
+	// Default: true
+	// +optional
+	ImagePullSerial *bool `json:"imagePullSerial,omitempty"`
 }
 
 // UpgradePlanConfiguration contains a list of configurable options which are specific to the "kubeadm upgrade plan" command.
