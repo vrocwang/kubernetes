@@ -566,6 +566,7 @@ func testSetup(t testing.TB, opts ...setupOption) (context.Context, *store, *cli
 	if setupOpts.recorderEnabled {
 		client.KV = &clientRecorder{KV: client.KV}
 	}
+	versioner := storage.APIObjectVersioner{}
 	store := newStore(
 		client,
 		setupOpts.codec,
@@ -576,6 +577,8 @@ func testSetup(t testing.TB, opts ...setupOption) (context.Context, *store, *cli
 		setupOpts.groupResource,
 		setupOpts.transformer,
 		setupOpts.leaseConfig,
+		NewDefaultDecoder(setupOpts.codec, versioner),
+		versioner,
 	)
 	ctx := context.Background()
 	return ctx, store, client
@@ -646,7 +649,7 @@ func TestInvalidKeys(t *testing.T) {
 
 	ctx, store, _ := testSetup(t)
 	expectInvalidKey("Create", store.Create(ctx, invalidKey, nil, nil, 0))
-	expectInvalidKey("Delete", store.Delete(ctx, invalidKey, nil, nil, nil, nil))
+	expectInvalidKey("Delete", store.Delete(ctx, invalidKey, nil, nil, nil, nil, storage.DeleteOptions{}))
 	_, watchErr := store.Watch(ctx, invalidKey, storage.ListOptions{})
 	expectInvalidKey("Watch", watchErr)
 	expectInvalidKey("Get", store.Get(ctx, invalidKey, storage.GetOptions{}, nil))

@@ -120,6 +120,7 @@ func TestPriorityQueue_Add(t *testing.T) {
 	logger, ctx := ktesting.NewTestContext(t)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	metrics.Register()
 	q := NewTestQueueWithObjects(ctx, newDefaultQueueSort(), objs)
 	q.Add(logger, medPriorityPodInfo.Pod)
 	q.Add(logger, unschedulablePodInfo.Pod)
@@ -1425,8 +1426,8 @@ func TestPriorityQueue_addToActiveQ(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			logger := klog.FromContext(ctx)
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
 			m := map[string][]framework.PreEnqueuePlugin{"": tt.plugins}
@@ -1507,7 +1508,7 @@ func BenchmarkMoveAllToActiveOrBackoffQueue(b *testing.B) {
 	for _, tt := range tests {
 		for _, podsInUnschedulablePods := range []int{1000, 5000} {
 			b.Run(fmt.Sprintf("%v-%v", tt.name, podsInUnschedulablePods), func(b *testing.B) {
-				logger, _ := ktesting.NewTestContext(b)
+				logger, ctx := ktesting.NewTestContext(b)
 				for i := 0; i < b.N; i++ {
 					b.StopTimer()
 					c := testingclock.NewFakeClock(time.Now())
@@ -1528,7 +1529,7 @@ func BenchmarkMoveAllToActiveOrBackoffQueue(b *testing.B) {
 						}
 					}
 
-					ctx, cancel := context.WithCancel(context.Background())
+					ctx, cancel := context.WithCancel(ctx)
 					defer cancel()
 					q := NewTestQueue(ctx, newDefaultQueueSort(), WithClock(c), WithQueueingHintMapPerProfile(m))
 
@@ -2103,14 +2104,14 @@ func TestPriorityQueue_NominatedPodDeleted(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			logger, _ := ktesting.NewTestContext(t)
+			logger, ctx := ktesting.NewTestContext(t)
 			cs := fake.NewClientset(tt.podInfo.Pod)
 			informerFactory := informers.NewSharedInformerFactory(cs, 0)
 			podLister := informerFactory.Core().V1().Pods().Lister()
 
 			// Build a PriorityQueue.
 			q := NewPriorityQueue(newDefaultQueueSort(), informerFactory, WithPodLister(podLister))
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			informerFactory.Start(ctx.Done())
 			informerFactory.WaitForCacheSync(ctx.Done())
@@ -2269,7 +2270,8 @@ func TestPriorityQueue_UpdateNominatedPodForNode(t *testing.T) {
 }
 
 func TestPriorityQueue_NewWithOptions(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	_, ctx := ktesting.NewTestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	q := NewTestQueue(ctx,
 		newDefaultQueueSort(),
@@ -2925,7 +2927,6 @@ func TestPodTimestamp(t *testing.T) {
 // TestPendingPodsMetric tests Prometheus metrics related with pending pods
 func TestPendingPodsMetric(t *testing.T) {
 	timestamp := time.Now()
-	metrics.Register()
 	total := 60
 	queueableNum := 50
 	queueable, failme := "queueable", "failme"
@@ -2950,6 +2951,7 @@ func TestPendingPodsMetric(t *testing.T) {
 			pInfosWithDelay[i].Attempts = 0
 		}
 	}
+	metrics.Register()
 
 	tests := []struct {
 		name                       string
@@ -3184,11 +3186,11 @@ scheduler_plugin_execution_duration_seconds_count{extension_point="PreEnqueue",p
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			resetMetrics()
-			resetPodInfos()
 			logger, ctx := ktesting.NewTestContext(t)
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
+			resetMetrics()
+			resetPodInfos()
 
 			m := map[string][]framework.PreEnqueuePlugin{"": {&preEnqueuePlugin{allowlists: []string{queueable}}}}
 			recorder := metrics.NewMetricsAsyncRecorder(3, 20*time.Microsecond, ctx.Done())
@@ -3325,8 +3327,8 @@ func TestPerPodSchedulingMetrics(t *testing.T) {
 func TestIncomingPodsMetrics(t *testing.T) {
 	timestamp := time.Now()
 	unschedulablePlg := "unschedulable_plugin"
-	metrics.Register()
 	var pInfos = make([]*framework.QueuedPodInfo, 0, 3)
+	metrics.Register()
 	for i := 1; i <= 3; i++ {
 		p := &framework.QueuedPodInfo{
 			PodInfo: mustNewTestPodInfo(t,
@@ -3398,10 +3400,10 @@ func TestIncomingPodsMetrics(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			metrics.SchedulerQueueIncomingPods.Reset()
 			logger, ctx := ktesting.NewTestContext(t)
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
+			metrics.SchedulerQueueIncomingPods.Reset()
 			queue := NewTestQueue(ctx, newDefaultQueueSort(), WithClock(testingclock.NewFakeClock(timestamp)))
 			for _, op := range test.operations {
 				for _, pInfo := range pInfos {
@@ -3631,7 +3633,8 @@ func TestPriorityQueue_calculateBackoffDuration(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			_, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			q := NewTestQueue(ctx, newDefaultQueueSort(), WithPodInitialBackoffDuration(tt.initialBackoffDuration), WithPodMaxBackoffDuration(tt.maxBackoffDuration))
 			if got := q.calculateBackoffDuration(tt.podInfo); got != tt.want {

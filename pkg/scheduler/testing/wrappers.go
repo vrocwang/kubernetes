@@ -22,6 +22,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	resourceapi "k8s.io/api/resource/v1alpha3"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -223,6 +224,12 @@ func (c *ContainerWrapper) ResourceLimits(limMap map[v1.ResourceName]string) *Co
 	return c
 }
 
+// RestartPolicy sets the container's restartPolicy to the given restartPolicy.
+func (c *ContainerWrapper) RestartPolicy(restartPolicy v1.ContainerRestartPolicy) *ContainerWrapper {
+	c.Container.RestartPolicy = &restartPolicy
+	return c
+}
+
 // PodWrapper wraps a Pod inside.
 type PodWrapper struct{ v1.Pod }
 
@@ -289,6 +296,12 @@ func (p *PodWrapper) Containers(containers []v1.Container) *PodWrapper {
 // PodResourceClaims appends PodResourceClaims into PodSpec of the inner pod.
 func (p *PodWrapper) PodResourceClaims(podResourceClaims ...v1.PodResourceClaim) *PodWrapper {
 	p.Spec.ResourceClaims = append(p.Spec.ResourceClaims, podResourceClaims...)
+	return p
+}
+
+// PodResourceClaims appends claim statuses into PodSpec of the inner pod.
+func (p *PodWrapper) ResourceClaimStatuses(resourceClaimStatuses ...v1.PodResourceClaimStatus) *PodWrapper {
+	p.Status.ResourceClaimStatuses = append(p.Status.ResourceClaimStatuses, resourceClaimStatuses...)
 	return p
 }
 
@@ -694,6 +707,17 @@ func (p *PodWrapper) InitReq(resMap map[v1.ResourceName]string) *PodWrapper {
 	return p
 }
 
+// SidecarReq adds a new sidecar container to the inner pod with given resource map.
+func (p *PodWrapper) SidecarReq(resMap map[v1.ResourceName]string) *PodWrapper {
+	if len(resMap) == 0 {
+		return p
+	}
+
+	name := fmt.Sprintf("sidecar-con%d", len(p.Spec.InitContainers))
+	p.Spec.InitContainers = append(p.Spec.InitContainers, MakeContainer().Name(name).Image(imageutils.GetPauseImageName()).RestartPolicy(v1.ContainerRestartPolicyAlways).Resources(resMap).Obj())
+	return p
+}
+
 // PreemptionPolicy sets the give preemption policy to the inner pod.
 func (p *PodWrapper) PreemptionPolicy(policy v1.PreemptionPolicy) *PodWrapper {
 	p.Spec.PreemptionPolicy = &policy
@@ -907,6 +931,23 @@ func (p *PersistentVolumeWrapper) NodeAffinityIn(key string, vals []string) *Per
 	return p
 }
 
+// Labels sets all {k,v} pair provided by `labels` to the pv.
+func (p *PersistentVolumeWrapper) Labels(labels map[string]string) *PersistentVolumeWrapper {
+	for k, v := range labels {
+		p.Label(k, v)
+	}
+	return p
+}
+
+// Label sets a {k,v} pair to the pv.
+func (p *PersistentVolumeWrapper) Label(k, v string) *PersistentVolumeWrapper {
+	if p.PersistentVolume.ObjectMeta.Labels == nil {
+		p.PersistentVolume.ObjectMeta.Labels = make(map[string]string)
+	}
+	p.PersistentVolume.ObjectMeta.Labels[k] = v
+	return p
+}
+
 // ResourceClaimWrapper wraps a ResourceClaim inside.
 type ResourceClaimWrapper struct{ resourceapi.ResourceClaim }
 
@@ -977,6 +1018,12 @@ func (wrapper *ResourceClaimWrapper) Allocation(allocation *resourceapi.Allocati
 	return wrapper
 }
 
+// Deleting sets the deletion timestamp of the inner object.
+func (wrapper *ResourceClaimWrapper) Deleting(time metav1.Time) *ResourceClaimWrapper {
+	wrapper.ResourceClaim.DeletionTimestamp = &time
+	return wrapper
+}
+
 // Structured turns a "normal" claim into one which was allocated via structured parameters.
 // The only difference is that there is no controller name and the special finalizer
 // gets added.
@@ -1001,7 +1048,7 @@ func (wrapper *ResourceClaimWrapper) ReservedFor(consumers ...resourceapi.Resour
 	return wrapper
 }
 
-// ReservedFor sets that field of the inner object given information about one pod.
+// ReservedForPod sets that field of the inner object given information about one pod.
 func (wrapper *ResourceClaimWrapper) ReservedForPod(podName string, podUID types.UID) *ResourceClaimWrapper {
 	return wrapper.ReservedFor(resourceapi.ResourceClaimConsumerReference{Resource: "pods", Name: podName, UID: podUID})
 }
@@ -1099,10 +1146,16 @@ func MakeResourceSlice(nodeName, driverName string) *ResourceSliceWrapper {
 	return wrapper
 }
 
+// FromResourceSlice creates a ResourceSlice wrapper from some existing object.
+func FromResourceSlice(other *resourceapi.ResourceSlice) *ResourceSliceWrapper {
+	return &ResourceSliceWrapper{*other.DeepCopy()}
+}
+
 func (wrapper *ResourceSliceWrapper) Obj() *resourceapi.ResourceSlice {
 	return &wrapper.ResourceSlice
 }
 
+// Devices sets the devices field of the inner object.
 func (wrapper *ResourceSliceWrapper) Devices(names ...string) *ResourceSliceWrapper {
 	for _, name := range names {
 		wrapper.Spec.Devices = append(wrapper.Spec.Devices, resourceapi.Device{Name: name})
@@ -1110,7 +1163,39 @@ func (wrapper *ResourceSliceWrapper) Devices(names ...string) *ResourceSliceWrap
 	return wrapper
 }
 
+// Device sets the devices field of the inner object.
 func (wrapper *ResourceSliceWrapper) Device(name string, attrs map[resourceapi.QualifiedName]resourceapi.DeviceAttribute) *ResourceSliceWrapper {
 	wrapper.Spec.Devices = append(wrapper.Spec.Devices, resourceapi.Device{Name: name, Basic: &resourceapi.BasicDevice{Attributes: attrs}})
 	return wrapper
+}
+
+// StorageClassWrapper wraps a StorageClass inside.
+type StorageClassWrapper struct{ storagev1.StorageClass }
+
+// MakeStorageClass creates a StorageClass wrapper.
+func MakeStorageClass() *StorageClassWrapper {
+	return &StorageClassWrapper{}
+}
+
+// Obj returns the inner StorageClass.
+func (s *StorageClassWrapper) Obj() *storagev1.StorageClass {
+	return &s.StorageClass
+}
+
+// Name sets `n` as the name of the inner StorageClass.
+func (s *StorageClassWrapper) Name(n string) *StorageClassWrapper {
+	s.SetName(n)
+	return s
+}
+
+// VolumeBindingMode sets mode as the mode of the inner StorageClass.
+func (s *StorageClassWrapper) VolumeBindingMode(mode storagev1.VolumeBindingMode) *StorageClassWrapper {
+	s.StorageClass.VolumeBindingMode = &mode
+	return s
+}
+
+// Provisoner sets p as the provisioner of the inner StorageClass.
+func (s *StorageClassWrapper) Provisioner(p string) *StorageClassWrapper {
+	s.StorageClass.Provisioner = p
+	return s
 }

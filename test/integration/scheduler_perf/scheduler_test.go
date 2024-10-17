@@ -17,11 +17,15 @@ limitations under the License.
 package benchmark
 
 import (
+	"flag"
+	"strings"
 	"testing"
 
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/kubernetes/pkg/features"
 )
+
+var testSchedulingLabelFilter = flag.String("test-scheduling-label-filter", "integration-test,-performance", "comma-separated list of labels which a testcase must have (no prefix or +) or must not have (-), used by TestScheduling")
 
 func TestScheduling(t *testing.T) {
 	testCases, err := getTestCases(configFile)
@@ -40,14 +44,15 @@ func TestScheduling(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			for _, w := range tc.Workloads {
 				t.Run(w.Name, func(t *testing.T) {
-					if !enabled(*testSchedulingLabelFilter, append(tc.Labels, w.Labels...)...) {
+					if !enabled(strings.Split(*testSchedulingLabelFilter, ","), append(tc.Labels, w.Labels...)...) {
 						t.Skipf("disabled by label filter %q", *testSchedulingLabelFilter)
 					}
-					informerFactory, tCtx := setupTestCase(t, tc, nil, nil)
+					featureGates := featureGatesMerge(tc.FeatureGates, w.FeatureGates)
+					informerFactory, tCtx := setupTestCase(t, tc, featureGates, nil, nil)
 
 					runWorkload(tCtx, tc, w, informerFactory)
 
-					if tc.FeatureGates[features.SchedulerQueueingHints] {
+					if featureGates[features.SchedulerQueueingHints] {
 						// In any case, we should make sure InFlightEvents is empty after running the scenario.
 						if err = checkEmptyInFlightEvents(); err != nil {
 							tCtx.Errorf("%s: %s", w.Name, err)

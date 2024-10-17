@@ -46,27 +46,6 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 )
 
-func (sched *Scheduler) onStorageClassAdd(obj interface{}) {
-	start := time.Now()
-	defer metrics.EventHandlingLatency.WithLabelValues(framework.StorageClassAdd.Label).Observe(metrics.SinceInSeconds(start))
-	logger := sched.logger
-	sc, ok := obj.(*storagev1.StorageClass)
-	if !ok {
-		logger.Error(nil, "Cannot convert to *storagev1.StorageClass", "obj", obj)
-		return
-	}
-
-	// CheckVolumeBindingPred fails if pod has unbound immediate PVCs. If these
-	// PVCs have specified StorageClass name, creating StorageClass objects
-	// with late binding will cause predicates to pass, so we need to move pods
-	// to active queue.
-	// We don't need to invalidate cached results because results will not be
-	// cached for pod that has unbound immediate PVCs.
-	if sc.VolumeBindingMode != nil && *sc.VolumeBindingMode == storagev1.VolumeBindingWaitForFirstConsumer {
-		sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, framework.StorageClassAdd, nil, sc, nil)
-	}
-}
-
 func (sched *Scheduler) addNodeToCache(obj interface{}) {
 	start := time.Now()
 	defer metrics.EventHandlingLatency.WithLabelValues(framework.NodeAdd.Label).Observe(metrics.SinceInSeconds(start))
@@ -134,6 +113,8 @@ func (sched *Scheduler) deleteNodeFromCache(obj interface{}) {
 		return
 	}
 
+	sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, framework.NodeDelete, node, nil, nil)
+
 	logger.V(3).Info("Delete event for node", "node", klog.KObj(node))
 	if err := sched.Cache.RemoveNode(logger, node); err != nil {
 		logger.Error(err, "Scheduler cache RemoveNode failed")
@@ -152,13 +133,20 @@ func (sched *Scheduler) addPodToSchedulingQueue(obj interface{}) {
 
 func (sched *Scheduler) updatePodInSchedulingQueue(oldObj, newObj interface{}) {
 	start := time.Now()
-	defer metrics.EventHandlingLatency.WithLabelValues(framework.UnscheduledPodUpdate.Label).Observe(metrics.SinceInSeconds(start))
+
 	logger := sched.logger
 	oldPod, newPod := oldObj.(*v1.Pod), newObj.(*v1.Pod)
 	// Bypass update event that carries identical objects; otherwise, a duplicated
 	// Pod may go through scheduling and cause unexpected behavior (see #96071).
 	if oldPod.ResourceVersion == newPod.ResourceVersion {
 		return
+	}
+
+	defer metrics.EventHandlingLatency.WithLabelValues(framework.UnscheduledPodUpdate.Label).Observe(metrics.SinceInSeconds(start))
+	for _, evt := range framework.PodSchedulingPropertiesChange(newPod, oldPod) {
+		if evt.Label != framework.UnscheduledPodUpdate.Label {
+			defer metrics.EventHandlingLatency.WithLabelValues(evt.Label).Observe(metrics.SinceInSeconds(start))
+		}
 	}
 
 	isAssumed, err := sched.Cache.IsAssumedPod(newPod)
@@ -265,7 +253,12 @@ func (sched *Scheduler) updatePodInCache(oldObj, newObj interface{}) {
 	}
 
 	events := framework.PodSchedulingPropertiesChange(newPod, oldPod)
+
+	// Save the time it takes to update the pod in the cache.
+	updatingDuration := metrics.SinceInSeconds(start)
+
 	for _, evt := range events {
+		startMoving := time.Now()
 		// SchedulingQueue.AssignedPodUpdated has a problem:
 		// It internally pre-filters Pods to move to activeQ,
 		// while taking only in-tree plugins into consideration.
@@ -276,10 +269,12 @@ func (sched *Scheduler) updatePodInCache(oldObj, newObj interface{}) {
 		// Here we use MoveAllToActiveOrBackoffQueue only when QueueingHint is enabled.
 		// (We cannot switch to MoveAllToActiveOrBackoffQueue right away because of throughput concern.)
 		if utilfeature.DefaultFeatureGate.Enabled(features.SchedulerQueueingHints) {
-			sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, framework.AssignedPodUpdate, oldPod, newPod, nil)
+			sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, evt, oldPod, newPod, nil)
 		} else {
 			sched.SchedulingQueue.AssignedPodUpdated(logger, oldPod, newPod, evt)
 		}
+		movingDuration := metrics.SinceInSeconds(startMoving)
+		metrics.EventHandlingLatency.WithLabelValues(evt.Label).Observe(updatingDuration + movingDuration)
 	}
 }
 
@@ -435,8 +430,25 @@ func addAllEventHandlers(
 			evt := framework.ClusterEvent{Resource: gvk, ActionType: framework.Add, Label: label}
 			funcs.AddFunc = func(obj interface{}) {
 				start := time.Now()
+				defer metrics.EventHandlingLatency.WithLabelValues(label).Observe(metrics.SinceInSeconds(start))
+				if gvk == framework.StorageClass && !utilfeature.DefaultFeatureGate.Enabled(features.SchedulerQueueingHints) {
+					sc, ok := obj.(*storagev1.StorageClass)
+					if !ok {
+						logger.Error(nil, "Cannot convert to *storagev1.StorageClass", "obj", obj)
+						return
+					}
+
+					// CheckVolumeBindingPred fails if pod has unbound immediate PVCs. If these
+					// PVCs have specified StorageClass name, creating StorageClass objects
+					// with late binding will cause predicates to pass, so we need to move pods
+					// to active queue.
+					// We don't need to invalidate cached results because results will not be
+					// cached for pod that has unbound immediate PVCs.
+					if sc.VolumeBindingMode == nil || *sc.VolumeBindingMode != storagev1.VolumeBindingWaitForFirstConsumer {
+						return
+					}
+				}
 				sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, evt, nil, obj, nil)
-				metrics.EventHandlingLatency.WithLabelValues(label).Observe(metrics.SinceInSeconds(start))
 			}
 		}
 		if at&framework.Update != 0 {
@@ -548,30 +560,12 @@ func addAllEventHandlers(
 				handlers = append(handlers, handlerRegistration)
 			}
 		case framework.StorageClass:
-			if at&framework.Add != 0 {
-				if handlerRegistration, err = informerFactory.Storage().V1().StorageClasses().Informer().AddEventHandler(
-					cache.ResourceEventHandlerFuncs{
-						AddFunc: sched.onStorageClassAdd,
-					},
-				); err != nil {
-					return err
-				}
-				handlers = append(handlers, handlerRegistration)
+			if handlerRegistration, err = informerFactory.Storage().V1().StorageClasses().Informer().AddEventHandler(
+				buildEvtResHandler(at, framework.StorageClass, "StorageClass"),
+			); err != nil {
+				return err
 			}
-			if at&framework.Update != 0 {
-				if handlerRegistration, err = informerFactory.Storage().V1().StorageClasses().Informer().AddEventHandler(
-					cache.ResourceEventHandlerFuncs{
-						UpdateFunc: func(old, obj interface{}) {
-							start := time.Now()
-							defer metrics.EventHandlingLatency.WithLabelValues(framework.StorageClassUpdate.Label).Observe(metrics.SinceInSeconds(start))
-							sched.SchedulingQueue.MoveAllToActiveOrBackoffQueue(logger, framework.StorageClassUpdate, old, obj, nil)
-						},
-					},
-				); err != nil {
-					return err
-				}
-				handlers = append(handlers, handlerRegistration)
-			}
+			handlers = append(handlers, handlerRegistration)
 		default:
 			// Tests may not instantiate dynInformerFactory.
 			if dynInformerFactory == nil {

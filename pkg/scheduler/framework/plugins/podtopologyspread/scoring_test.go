@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1429,14 +1430,14 @@ func BenchmarkTestPodTopologySpreadScore(b *testing.B) {
 				var gotList framework.NodeScoreList
 				for _, n := range filteredNodes {
 					nodeName := n.Name
-					score, status := p.Score(context.Background(), state, tt.pod, nodeName)
+					score, status := p.Score(ctx, state, tt.pod, nodeName)
 					if !status.IsSuccess() {
 						b.Fatalf("unexpected error: %v", status)
 					}
 					gotList = append(gotList, framework.NodeScore{Name: nodeName, Score: score})
 				}
 
-				status = p.NormalizeScore(context.Background(), state, tt.pod, gotList)
+				status = p.NormalizeScore(ctx, state, tt.pod, gotList)
 				if !status.IsSuccess() {
 					b.Fatal(status)
 				}

@@ -3640,10 +3640,11 @@ func (d *NodeDescriber) Describe(namespace, name string, describerSettings Descr
 		return "", err
 	}
 
-	fieldSelector, err := fields.ParseSelector("spec.nodeName=" + name + ",status.phase!=" + string(corev1.PodSucceeded) + ",status.phase!=" + string(corev1.PodFailed))
-	if err != nil {
-		return "", err
-	}
+	fieldSelector := fields.AndSelectors(
+		fields.OneTermEqualSelector("spec.nodeName", name),
+		fields.OneTermNotEqualSelector("status.phase", string(corev1.PodSucceeded)),
+		fields.OneTermNotEqualSelector("status.phase", string(corev1.PodFailed)),
+	)
 	// in a policy aware setting, users may have access to a node, but not all pods
 	// in that case, we note that the user does not have access to the pods
 	canViewPods := true
@@ -5451,6 +5452,15 @@ func formatEndpointSlices(endpointSlices []discoveryv1.EndpointSlice, ports sets
 				if len(list) == max {
 					more = true
 				}
+				isReady := endpointSlices[i].Endpoints[j].Conditions.Ready == nil || *endpointSlices[i].Endpoints[j].Conditions.Ready
+				if !isReady {
+					// ready indicates that this endpoint is prepared to receive traffic,
+					// according to whatever system is managing the endpoint. A nil value
+					// indicates an unknown state. In most cases consumers should interpret this
+					// unknown state as ready.
+					// More info: vendor/k8s.io/api/discovery/v1/types.go
+					continue
+				}
 				if !more {
 					list = append(list, endpointSlices[i].Endpoints[j].Addresses[0])
 				}
@@ -5466,6 +5476,15 @@ func formatEndpointSlices(endpointSlices []discoveryv1.EndpointSlice, ports sets
 							more = true
 						}
 						addr := endpointSlices[i].Endpoints[k].Addresses[0]
+						isReady := endpointSlices[i].Endpoints[k].Conditions.Ready == nil || *endpointSlices[i].Endpoints[k].Conditions.Ready
+						if !isReady {
+							// ready indicates that this endpoint is prepared to receive traffic,
+							// according to whatever system is managing the endpoint. A nil value
+							// indicates an unknown state. In most cases consumers should interpret this
+							// unknown state as ready.
+							// More info: vendor/k8s.io/api/discovery/v1/types.go
+							continue
+						}
 						if !more {
 							hostPort := net.JoinHostPort(addr, strconv.Itoa(int(*port.Port)))
 							list = append(list, hostPort)

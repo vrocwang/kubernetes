@@ -242,6 +242,12 @@ var (
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	NodeAuthenticator = framework.WithFeature(framework.ValidFeatures.Add("NodeAuthenticator"))
 
+	// Owner: sig-auth
+	// Marks tests that require a conforming implementation of
+	// Node claims for serviceaccounts. Typically this means that the
+	// ServiceAccountTokenNodeBindingValidation feature must be enabled.
+	ServiceAccountTokenNodeBindingValidation = framework.WithFeature(framework.ValidFeatures.Add("ServiceAccountTokenNodeBindingValidation"))
+
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	NodeAuthorizer = framework.WithFeature(framework.ValidFeatures.Add("NodeAuthorizer"))
 
@@ -282,6 +288,10 @@ var (
 	// RelaxedEnvironmentVariableValidation used when we verify whether the pod can consume all printable ASCII characters as environment variable names,
 	// and whether the pod can consume configmap/secret that key starts with a number.
 	RelaxedEnvironmentVariableValidation = framework.WithFeature(framework.ValidFeatures.Add("RelaxedEnvironmentVariableValidation"))
+
+	// Owner: sig-network
+	// Marks tests of KEP-4427 that require the `RelaxedDNSSearchValidation` feature gate
+	RelaxedDNSSearchValidation = framework.WithFeature(framework.ValidFeatures.Add("RelaxedDNSSearchValidation"))
 
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	Recreate = framework.WithFeature(framework.ValidFeatures.Add("Recreate"))
@@ -353,6 +363,14 @@ var (
 	// (used for testing fine-grained SupplementalGroups control <https://kep.k8s.io/3619>)
 	SupplementalGroupsPolicy = framework.WithFeature(framework.ValidFeatures.Add("SupplementalGroupsPolicy"))
 
+	// Owner: sig-node
+	// Tests marked with this feature MUST run with the CRI Proxy configured so errors can be injected into the kubelet's CRI calls.
+	// This is useful for testing how the kubelet handles various error conditions in its CRI interactions.
+	// test-infra jobs:
+	// - pull-kubernetes-node-e2e-cri-proxy-serial (need manual trigger)
+	// - ci-kubernetes-node-e2e-cri-proxy-serial
+	CriProxy = framework.WithFeature(framework.ValidFeatures.Add("CriProxy"))
+
 	// Owner: sig-network
 	// Marks tests that require a cluster with Topology Hints enabled.
 	TopologyHints = framework.WithFeature(framework.ValidFeatures.Add("Topology Hints"))
@@ -391,6 +409,10 @@ var (
 
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	VolumeSnapshotDataSource = framework.WithFeature(framework.ValidFeatures.Add("VolumeSnapshotDataSource"))
+
+	// Owner: sig-storage
+	// Volume group snapshot tests
+	VolumeGroupSnapshotDataSource = framework.WithFeature(framework.ValidFeatures.Add("volumegroupsnapshot"))
 
 	// TODO: document the feature (owning SIG, when to use this feature for a test)
 	VolumeSourceXFS = framework.WithFeature(framework.ValidFeatures.Add("VolumeSourceXFS"))
