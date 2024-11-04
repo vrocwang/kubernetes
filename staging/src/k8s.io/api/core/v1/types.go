@@ -3103,13 +3103,15 @@ type ContainerStatus struct {
 }
 
 type ResourceStatus struct {
-	// Name of the resource. Must be unique within the pod and match one of the resources from the pod spec.
+	// Name of the resource. Must be unique within the pod and in case of non-DRA resource, match one of the resources from the pod spec.
+	// For DRA resources, the value must be "claim:<claim_name>/<request>".
+	// When this status is reported about a container, the "claim_name" and "request" must match one of the claims of this container.
 	// +required
 	Name ResourceName `json:"name" protobuf:"bytes,1,opt,name=name"`
-	// List of unique Resources health. Each element in the list contains an unique resource ID and resource health.
-	// At a minimum, ResourceID must uniquely identify the Resource
-	// allocated to the Pod on the Node for the lifetime of a Pod.
-	// See ResourceID type for it's definition.
+	// List of unique resources health. Each element in the list contains an unique resource ID and its health.
+	// At a minimum, for the lifetime of a Pod, resource ID must uniquely identify the resource allocated to the Pod on the Node.
+	// If other Pod on the same Node reports the status with the same resource ID, it must be the same resource they share.
+	// See ResourceID type definition for a specific format it has in various use cases.
 	// +listType=map
 	// +listMapKey=resourceID
 	Resources []ResourceHealth `json:"resources,omitempty" protobuf:"bytes,2,rep,name=resources"`
@@ -3126,16 +3128,16 @@ const (
 // ResourceID is calculated based on the source of this resource health information.
 // For DevicePlugin:
 //
-//	deviceplugin:DeviceID, where DeviceID is from the Device structure of DevicePlugin's ListAndWatchResponse type: https://github.com/kubernetes/kubernetes/blob/eda1c780543a27c078450e2f17d674471e00f494/staging/src/k8s.io/kubelet/pkg/apis/deviceplugin/v1alpha/api.proto#L61-L73
+//	DeviceID, where DeviceID is from the Device structure of DevicePlugin's ListAndWatchResponse type: https://github.com/kubernetes/kubernetes/blob/eda1c780543a27c078450e2f17d674471e00f494/staging/src/k8s.io/kubelet/pkg/apis/deviceplugin/v1alpha/api.proto#L61-L73
 //
 // DevicePlugin ID is usually a constant for the lifetime of a Node and typically can be used to uniquely identify the device on the node.
 // For DRA:
 //
-//	dra:<driver name>/<pool name>/<device name>: such a device can be looked up in the information published by that DRA driver to learn more about it. It is designed to be globally unique in a cluster.
+//	<driver name>/<pool name>/<device name>: such a device can be looked up in the information published by that DRA driver to learn more about it. It is designed to be globally unique in a cluster.
 type ResourceID string
 
 // ResourceHealth represents the health of a resource. It has the latest device health information.
-// This is a part of KEP https://kep.k8s.io/4680 and historical health changes are planned to be added in future iterations of a KEP.
+// This is a part of KEP https://kep.k8s.io/4680.
 type ResourceHealth struct {
 	// ResourceID is the unique identifier of the resource. See the ResourceID type for more information.
 	ResourceID ResourceID `json:"resourceID" protobuf:"bytes,1,opt,name=resourceID"`
@@ -3237,7 +3239,7 @@ const (
 	// during scheduling, for example due to nodeAffinity parsing errors.
 	PodReasonSchedulerError = "SchedulerError"
 
-	// TerminationByKubelet reason in DisruptionTarget pod condition indicates that the termination
+	// PodReasonTerminationByKubelet reason in DisruptionTarget pod condition indicates that the termination
 	// is initiated by kubelet
 	PodReasonTerminationByKubelet = "TerminationByKubelet"
 
@@ -6092,7 +6094,7 @@ type NodeStatus struct {
 	// +optional
 	Phase NodePhase `json:"phase,omitempty" protobuf:"bytes,3,opt,name=phase,casttype=NodePhase"`
 	// Conditions is an array of current observed node conditions.
-	// More info: https://kubernetes.io/docs/concepts/nodes/node/#condition
+	// More info: https://kubernetes.io/docs/reference/node/node-status/#condition
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -6101,7 +6103,7 @@ type NodeStatus struct {
 	Conditions []NodeCondition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,4,rep,name=conditions"`
 	// List of addresses reachable to the node.
 	// Queried from cloud provider, if available.
-	// More info: https://kubernetes.io/docs/concepts/nodes/node/#addresses
+	// More info: https://kubernetes.io/docs/reference/node/node-status/#addresses
 	// Note: This field is declared as mergeable, but the merge key is not sufficiently
 	// unique, which can cause data corruption when it is merged. Callers should instead
 	// use a full-replacement patch. See https://pr.k8s.io/79391 for an example.
@@ -6119,7 +6121,7 @@ type NodeStatus struct {
 	// +optional
 	DaemonEndpoints NodeDaemonEndpoints `json:"daemonEndpoints,omitempty" protobuf:"bytes,6,opt,name=daemonEndpoints"`
 	// Set of ids/uuids to uniquely identify the node.
-	// More info: https://kubernetes.io/docs/concepts/nodes/node/#info
+	// More info: https://kubernetes.io/docs/reference/node/node-status/#info
 	// +optional
 	NodeInfo NodeSystemInfo `json:"nodeInfo,omitempty" protobuf:"bytes,7,opt,name=nodeInfo"`
 	// List of container images on this node
@@ -6508,7 +6510,6 @@ type NamespaceList struct {
 // +k8s:prerelease-lifecycle-gen:introduced=1.0
 
 // Binding ties one object to another; for example, a pod is bound to a node by a scheduler.
-// Deprecated in 1.7, please use the bindings subresource of pods instead.
 type Binding struct {
 	metav1.TypeMeta `json:",inline"`
 	// Standard object's metadata.

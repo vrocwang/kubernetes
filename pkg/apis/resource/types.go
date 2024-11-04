@@ -324,19 +324,10 @@ type ResourceClaimSpec struct {
 	// +optional
 	Devices DeviceClaim
 
-	// Controller is the name of the DRA driver that is meant
-	// to handle allocation of this claim. If empty, allocation is handled
-	// by the scheduler while scheduling a pod.
-	//
-	// Must be a DNS subdomain and should end with a DNS domain owned by the
-	// vendor of the driver.
-	//
-	// This is an alpha field and requires enabling the DRAControlPlaneController
-	// feature gate.
-	//
-	// +optional
-	// +featureGate=DRAControlPlaneController
-	Controller string
+	// Controller is tombstoned since Kubernetes 1.32 where
+	// it got removed. May be reused once decoding v1alpha3 is no longer
+	// supported.
+	// Controller string
 }
 
 // DeviceClaim defines how to request devices with a ResourceClaim.
@@ -451,9 +442,13 @@ type DeviceRequest struct {
 	// all ordinary claims to the device with respect to access modes and
 	// any resource allocations.
 	//
+	// This is an alpha field and requires enabling the DRAAdminAccess
+	// feature gate. Admin access is disabled if this field is unset or
+	// set to false, otherwise it is enabled.
+	//
 	// +optional
-	// +default=false
-	AdminAccess bool
+	// +featureGate=DRAAdminAccess
+	AdminAccess *bool
 }
 
 const (
@@ -526,9 +521,41 @@ type CELDeviceSelector struct {
 	//
 	//     cel.bind(dra, device.attributes["dra.example.com"], dra.someBool && dra.anotherBool)
 	//
+	// The length of the expression must be smaller or equal to 10 Ki. The
+	// cost of evaluating it is also limited based on the estimated number
+	// of logical steps.
+	//
 	// +required
 	Expression string
 }
+
+// CELSelectorExpressionMaxCost specifies the cost limit for a single CEL selector
+// evaluation.
+//
+// There is no overall budget for selecting a device, so the actual time
+// required for that is proportional to the number of CEL selectors and how
+// often they need to be evaluated, which can vary depending on several factors
+// (number of devices, cluster utilization, additional constraints).
+//
+// Validation against this limit and [CELSelectorExpressionMaxLength] happens
+// only when setting an expression for the first time or when changing it. If
+// the limits are changed in a future Kubernetes release, existing users are
+// guaranteed that existing expressions will continue to be valid.
+//
+// However, the kube-scheduler also applies this cost limit at runtime, so it
+// could happen that a valid expression fails at runtime after an up- or
+// downgrade. This can also happen without version skew when the cost estimate
+// underestimated the actual cost. That this might happen is the reason why
+// kube-scheduler enforces the runtime limit instead of relying on validation.
+//
+// According to
+// https://github.com/kubernetes/kubernetes/blob/4aeaf1e99e82da8334c0d6dddd848a194cd44b4f/staging/src/k8s.io/apiserver/pkg/apis/cel/config.go#L20-L22,
+// this gives roughly 0.1 second for each expression evaluation.
+// However, this depends on how fast the machine is.
+const CELSelectorExpressionMaxCost = 1000000
+
+// CELSelectorExpressionMaxLength is the maximum length of a CEL selector expression string.
+const CELSelectorExpressionMaxLength = 10 * 1024
 
 // DeviceConstraint must have exactly one field set besides Requests.
 type DeviceConstraint struct {
@@ -652,19 +679,10 @@ type ResourceClaimStatus struct {
 	// +patchMergeKey=uid
 	ReservedFor []ResourceClaimConsumerReference
 
-	// Indicates that a claim is to be deallocated. While this is set,
-	// no new consumers may be added to ReservedFor.
-	//
-	// This is only used if the claim needs to be deallocated by a DRA driver.
-	// That driver then must deallocate this claim and reset the field
-	// together with clearing the Allocation field.
-	//
-	// This is an alpha field and requires enabling the DRAControlPlaneController
-	// feature gate.
-	//
-	// +optional
-	// +featureGate=DRAControlPlaneController
-	DeallocationRequested bool
+	// DeallocationRequested is tombstoned since Kubernetes 1.32 where
+	// it got removed. May be reused once decoding v1alpha3 is no longer
+	// supported.
+	// DeallocationRequested bool
 }
 
 // ReservedForMaxSize is the maximum number of entries in
@@ -704,21 +722,10 @@ type AllocationResult struct {
 	// +optional
 	NodeSelector *core.NodeSelector
 
-	// Controller is the name of the DRA driver which handled the
-	// allocation. That driver is also responsible for deallocating the
-	// claim. It is empty when the claim can be deallocated without
-	// involving a driver.
-	//
-	// A driver may allocate devices provided by other drivers, so this
-	// driver name here can be different from the driver names listed for
-	// the results.
-	//
-	// This is an alpha field and requires enabling the DRAControlPlaneController
-	// feature gate.
-	//
-	// +optional
-	// +featureGate=DRAControlPlaneController
-	Controller string
+	// Controller is tombstoned since Kubernetes 1.32 where
+	// it got removed. May be reused once decoding v1alpha3 is no longer
+	// supported.
+	// Controller string
 }
 
 // DeviceAllocationResult is the result of allocating devices.
@@ -779,6 +786,18 @@ type DeviceRequestAllocationResult struct {
 	//
 	// +required
 	Device string
+
+	// AdminAccess indicates that this device was allocated for
+	// administrative access. See the corresponding request field
+	// for a definition of mode.
+	//
+	// This is an alpha field and requires enabling the DRAAdminAccess
+	// feature gate. Admin access is disabled if this field is unset or
+	// set to false, otherwise it is enabled.
+	//
+	// +optional
+	// +featureGate=DRAAdminAccess
+	AdminAccess *bool
 }
 
 // DeviceAllocationConfiguration gets embedded in an AllocationResult.
@@ -819,104 +838,6 @@ type ResourceClaimList struct {
 
 	// Items is the list of resource claims.
 	Items []ResourceClaim
-}
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-// PodSchedulingContext objects hold information that is needed to schedule
-// a Pod with ResourceClaims that use "WaitForFirstConsumer" allocation
-// mode.
-//
-// This is an alpha type and requires enabling the DRAControlPlaneController
-// feature gate.
-type PodSchedulingContext struct {
-	metav1.TypeMeta
-	// Standard object metadata
-	// +optional
-	metav1.ObjectMeta
-
-	// Spec describes where resources for the Pod are needed.
-	Spec PodSchedulingContextSpec
-
-	// Status describes where resources for the Pod can be allocated.
-	//
-	// +optional
-	Status PodSchedulingContextStatus
-}
-
-// PodSchedulingContextSpec describes where resources for the Pod are needed.
-type PodSchedulingContextSpec struct {
-	// SelectedNode is the node for which allocation of ResourceClaims that
-	// are referenced by the Pod and that use "WaitForFirstConsumer"
-	// allocation is to be attempted.
-	//
-	// +optional
-	SelectedNode string
-
-	// PotentialNodes lists nodes where the Pod might be able to run.
-	//
-	// The size of this field is limited to 128. This is large enough for
-	// many clusters. Larger clusters may need more attempts to find a node
-	// that suits all pending resources. This may get increased in the
-	// future, but not reduced.
-	//
-	// +optional
-	// +listType=atomic
-	PotentialNodes []string
-}
-
-// PodSchedulingContextStatus describes where resources for the Pod can be allocated.
-type PodSchedulingContextStatus struct {
-	// ResourceClaims describes resource availability for each
-	// pod.spec.resourceClaim entry where the corresponding ResourceClaim
-	// uses "WaitForFirstConsumer" allocation mode.
-	//
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	ResourceClaims []ResourceClaimSchedulingStatus
-
-	// If there ever is a need to support other kinds of resources
-	// than ResourceClaim, then new fields could get added here
-	// for those other resources.
-}
-
-// ResourceClaimSchedulingStatus contains information about one particular
-// ResourceClaim with "WaitForFirstConsumer" allocation mode.
-type ResourceClaimSchedulingStatus struct {
-	// Name matches the pod.spec.resourceClaims[*].Name field.
-	//
-	// +required
-	Name string
-
-	// UnsuitableNodes lists nodes that the ResourceClaim cannot be
-	// allocated for.
-	//
-	// The size of this field is limited to 128, the same as for
-	// PodSchedulingSpec.PotentialNodes. This may get increased in the
-	// future, but not reduced.
-	//
-	// +optional
-	// +listType=atomic
-	UnsuitableNodes []string
-}
-
-// PodSchedulingNodeListMaxSize defines the maximum number of entries in the
-// node lists that are stored in PodSchedulingContext objects. This limit is part
-// of the API.
-const PodSchedulingNodeListMaxSize = 128
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-// PodSchedulingContextList is a collection of Pod scheduling objects.
-type PodSchedulingContextList struct {
-	metav1.TypeMeta
-	// Standard list metadata
-	// +optional
-	metav1.ListMeta
-
-	// Items is the list of PodSchedulingContext objects.
-	Items []PodSchedulingContext
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -964,21 +885,10 @@ type DeviceClassSpec struct {
 	// +listType=atomic
 	Config []DeviceClassConfiguration
 
-	// Only nodes matching the selector will be considered by the scheduler
-	// when trying to find a Node that fits a Pod when that Pod uses
-	// a claim that has not been allocated yet *and* that claim
-	// gets allocated through a control plane controller. It is ignored
-	// when the claim does not use a control plane controller
-	// for allocation.
-	//
-	// Setting this field is optional. If unset, all Nodes are candidates.
-	//
-	// This is an alpha field and requires enabling the DRAControlPlaneController
-	// feature gate.
-	//
-	// +optional
-	// +featureGate=DRAControlPlaneController
-	SuitableNodes *core.NodeSelector
+	// SuitableNodes is tombstoned since Kubernetes 1.32 where
+	// it got removed. May be reused once decoding v1alpha3 is no longer
+	// supported.
+	// SuitableNodes *v1.NodeSelector `json:"suitableNodes,omitempty" protobuf:"bytes,3,opt,name=suitableNodes"`
 }
 
 // DeviceClassConfiguration is used in DeviceClass.

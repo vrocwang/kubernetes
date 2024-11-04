@@ -18,15 +18,18 @@ package testing
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	policy "k8s.io/api/policy/v1"
 	resourceapi "k8s.io/api/resource/v1alpha3"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	"k8s.io/utils/ptr"
 )
@@ -228,6 +231,64 @@ func (c *ContainerWrapper) ResourceLimits(limMap map[v1.ResourceName]string) *Co
 func (c *ContainerWrapper) RestartPolicy(restartPolicy v1.ContainerRestartPolicy) *ContainerWrapper {
 	c.Container.RestartPolicy = &restartPolicy
 	return c
+}
+
+// PodDisruptionBudgetWrapper wraps a PodDisruptionBudget inside.
+type PodDisruptionBudgetWrapper struct {
+	policy.PodDisruptionBudget
+}
+
+// MakePDB creates a PodDisruptionBudget wrapper.
+func MakePDB() *PodDisruptionBudgetWrapper {
+	return &PodDisruptionBudgetWrapper{policy.PodDisruptionBudget{}}
+}
+
+// Obj returns the inner PodDisruptionBudget.
+func (p *PodDisruptionBudgetWrapper) Obj() *policy.PodDisruptionBudget {
+	return &p.PodDisruptionBudget
+}
+
+// Name sets `name` as the name of the inner PodDisruptionBudget.
+func (p *PodDisruptionBudgetWrapper) Name(name string) *PodDisruptionBudgetWrapper {
+	p.SetName(name)
+	return p
+}
+
+// Namespace sets `namespace` as the namespace of the inner PodDisruptionBudget.
+func (p *PodDisruptionBudgetWrapper) Namespace(namespace string) *PodDisruptionBudgetWrapper {
+	p.SetNamespace(namespace)
+	return p
+}
+
+// MinAvailable sets `minAvailable` to the inner PodDisruptionBudget.Spec.MinAvailable.
+func (p *PodDisruptionBudgetWrapper) MinAvailable(minAvailable string) *PodDisruptionBudgetWrapper {
+	p.Spec.MinAvailable = &intstr.IntOrString{
+		Type:   intstr.String,
+		StrVal: minAvailable,
+	}
+	return p
+}
+
+// MatchLabel adds a {key,value} to the inner PodDisruptionBudget.Spec.Selector.MatchLabels.
+func (p *PodDisruptionBudgetWrapper) MatchLabel(key, value string) *PodDisruptionBudgetWrapper {
+	selector := p.Spec.Selector
+	if selector == nil {
+		selector = &metav1.LabelSelector{}
+	}
+	matchLabels := selector.MatchLabels
+	if matchLabels == nil {
+		matchLabels = map[string]string{}
+	}
+	matchLabels[key] = value
+	selector.MatchLabels = matchLabels
+	p.Spec.Selector = selector
+	return p
+}
+
+// DisruptionsAllowed sets `disruptionsAllowed` to the inner PodDisruptionBudget.Status.DisruptionsAllowed.
+func (p *PodDisruptionBudgetWrapper) DisruptionsAllowed(disruptionsAllowed int32) *PodDisruptionBudgetWrapper {
+	p.Status.DisruptionsAllowed = disruptionsAllowed
+	return p
 }
 
 // PodWrapper wraps a Pod inside.
@@ -952,8 +1013,8 @@ func (p *PersistentVolumeWrapper) Label(k, v string) *PersistentVolumeWrapper {
 type ResourceClaimWrapper struct{ resourceapi.ResourceClaim }
 
 // MakeResourceClaim creates a ResourceClaim wrapper.
-func MakeResourceClaim(controller string) *ResourceClaimWrapper {
-	return &ResourceClaimWrapper{resourceapi.ResourceClaim{Spec: resourceapi.ResourceClaimSpec{Controller: controller}}}
+func MakeResourceClaim() *ResourceClaimWrapper {
+	return &ResourceClaimWrapper{}
 }
 
 // FromResourceClaim creates a ResourceClaim wrapper from some existing object.
@@ -1014,6 +1075,9 @@ func (wrapper *ResourceClaimWrapper) Request(deviceClassName string) *ResourceCl
 
 // Allocation sets the allocation of the inner object.
 func (wrapper *ResourceClaimWrapper) Allocation(allocation *resourceapi.AllocationResult) *ResourceClaimWrapper {
+	if !slices.Contains(wrapper.ResourceClaim.Finalizers, resourceapi.Finalizer) {
+		wrapper.ResourceClaim.Finalizers = append(wrapper.ResourceClaim.Finalizers, resourceapi.Finalizer)
+	}
 	wrapper.ResourceClaim.Status.Allocation = allocation
 	return wrapper
 }
@@ -1021,24 +1085,6 @@ func (wrapper *ResourceClaimWrapper) Allocation(allocation *resourceapi.Allocati
 // Deleting sets the deletion timestamp of the inner object.
 func (wrapper *ResourceClaimWrapper) Deleting(time metav1.Time) *ResourceClaimWrapper {
 	wrapper.ResourceClaim.DeletionTimestamp = &time
-	return wrapper
-}
-
-// Structured turns a "normal" claim into one which was allocated via structured parameters.
-// The only difference is that there is no controller name and the special finalizer
-// gets added.
-func (wrapper *ResourceClaimWrapper) Structured() *ResourceClaimWrapper {
-	wrapper.Spec.Controller = ""
-	if wrapper.ResourceClaim.Status.Allocation != nil {
-		wrapper.ResourceClaim.Finalizers = append(wrapper.ResourceClaim.Finalizers, resourceapi.Finalizer)
-		wrapper.ResourceClaim.Status.Allocation.Controller = ""
-	}
-	return wrapper
-}
-
-// DeallocationRequested sets that field of the inner object.
-func (wrapper *ResourceClaimWrapper) DeallocationRequested(deallocationRequested bool) *ResourceClaimWrapper {
-	wrapper.ResourceClaim.Status.DeallocationRequested = deallocationRequested
 	return wrapper
 }
 
@@ -1051,86 +1097,6 @@ func (wrapper *ResourceClaimWrapper) ReservedFor(consumers ...resourceapi.Resour
 // ReservedForPod sets that field of the inner object given information about one pod.
 func (wrapper *ResourceClaimWrapper) ReservedForPod(podName string, podUID types.UID) *ResourceClaimWrapper {
 	return wrapper.ReservedFor(resourceapi.ResourceClaimConsumerReference{Resource: "pods", Name: podName, UID: podUID})
-}
-
-// PodSchedulingWrapper wraps a PodSchedulingContext inside.
-type PodSchedulingWrapper struct {
-	resourceapi.PodSchedulingContext
-}
-
-// MakePodSchedulingContexts creates a PodSchedulingContext wrapper.
-func MakePodSchedulingContexts() *PodSchedulingWrapper {
-	return &PodSchedulingWrapper{resourceapi.PodSchedulingContext{}}
-}
-
-// FromPodSchedulingContexts creates a PodSchedulingContext wrapper from an existing object.
-func FromPodSchedulingContexts(other *resourceapi.PodSchedulingContext) *PodSchedulingWrapper {
-	return &PodSchedulingWrapper{*other.DeepCopy()}
-}
-
-// Obj returns the inner object.
-func (wrapper *PodSchedulingWrapper) Obj() *resourceapi.PodSchedulingContext {
-	return &wrapper.PodSchedulingContext
-}
-
-// Name sets `s` as the name of the inner object.
-func (wrapper *PodSchedulingWrapper) Name(s string) *PodSchedulingWrapper {
-	wrapper.SetName(s)
-	return wrapper
-}
-
-// UID sets `s` as the UID of the inner object.
-func (wrapper *PodSchedulingWrapper) UID(s string) *PodSchedulingWrapper {
-	wrapper.SetUID(types.UID(s))
-	return wrapper
-}
-
-// Namespace sets `s` as the namespace of the inner object.
-func (wrapper *PodSchedulingWrapper) Namespace(s string) *PodSchedulingWrapper {
-	wrapper.SetNamespace(s)
-	return wrapper
-}
-
-// OwnerReference updates the owning controller of the inner object.
-func (wrapper *PodSchedulingWrapper) OwnerReference(name, uid string, gvk schema.GroupVersionKind) *PodSchedulingWrapper {
-	wrapper.OwnerReferences = []metav1.OwnerReference{
-		{
-			APIVersion:         gvk.GroupVersion().String(),
-			Kind:               gvk.Kind,
-			Name:               name,
-			UID:                types.UID(uid),
-			Controller:         ptr.To(true),
-			BlockOwnerDeletion: ptr.To(true),
-		},
-	}
-	return wrapper
-}
-
-// Label applies a {k,v} label pair to the inner object
-func (wrapper *PodSchedulingWrapper) Label(k, v string) *PodSchedulingWrapper {
-	if wrapper.Labels == nil {
-		wrapper.Labels = make(map[string]string)
-	}
-	wrapper.Labels[k] = v
-	return wrapper
-}
-
-// SelectedNode sets that field of the inner object.
-func (wrapper *PodSchedulingWrapper) SelectedNode(s string) *PodSchedulingWrapper {
-	wrapper.Spec.SelectedNode = s
-	return wrapper
-}
-
-// PotentialNodes sets that field of the inner object.
-func (wrapper *PodSchedulingWrapper) PotentialNodes(nodes ...string) *PodSchedulingWrapper {
-	wrapper.Spec.PotentialNodes = nodes
-	return wrapper
-}
-
-// ResourceClaims sets that field of the inner object.
-func (wrapper *PodSchedulingWrapper) ResourceClaims(statuses ...resourceapi.ResourceClaimSchedulingStatus) *PodSchedulingWrapper {
-	wrapper.Status.ResourceClaims = statuses
-	return wrapper
 }
 
 type ResourceSliceWrapper struct {

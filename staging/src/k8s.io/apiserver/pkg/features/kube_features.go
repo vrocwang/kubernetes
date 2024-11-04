@@ -87,6 +87,15 @@ const (
 	// Allows authorization to use field and label selectors.
 	AuthorizeWithSelectors featuregate.Feature = "AuthorizeWithSelectors"
 
+	// owner: @benluddy
+	// kep: https://kep.k8s.io/4222
+	//
+	// Enables CBOR as a supported encoding for requests and responses, and as the
+	// preferred storage encoding for custom resources.
+	//
+	// This feature is currently PRE-ALPHA and MUST NOT be enabled outside of integration tests.
+	TestOnlyCBORServingAndStorage featuregate.Feature = "TestOnlyCBORServingAndStorage"
+
 	// owner: @serathius
 	// Enables concurrent watch object decoding to avoid starving watch cache when conversion webhook is installed.
 	ConcurrentWatchObjectDecode featuregate.Feature = "ConcurrentWatchObjectDecode"
@@ -238,6 +247,7 @@ const (
 func init() {
 	runtime.Must(utilfeature.DefaultMutableFeatureGate.Add(defaultKubernetesFeatureGates))
 	runtime.Must(utilfeature.DefaultMutableFeatureGate.AddVersioned(defaultVersionedKubernetesFeatureGates))
+	runtime.Must(utilfeature.TestOnlyMutableFeatureGate.AddVersioned(testOnlyVersionedKubernetesFeatureGates))
 }
 
 // defaultVersionedKubernetesFeatureGates consists of all known Kubernetes-specific feature keys with VersionedSpecs.
@@ -291,6 +301,7 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 
 	AuthorizeWithSelectors: {
 		{Version: version.MustParse("1.31"), Default: false, PreRelease: featuregate.Alpha},
+		{Version: version.MustParse("1.32"), Default: true, PreRelease: featuregate.Beta},
 	},
 
 	ConcurrentWatchObjectDecode: {
@@ -373,6 +384,7 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 	StructuredAuthorizationConfiguration: {
 		{Version: version.MustParse("1.29"), Default: false, PreRelease: featuregate.Alpha},
 		{Version: version.MustParse("1.30"), Default: true, PreRelease: featuregate.Beta},
+		{Version: version.MustParse("1.32"), Default: true, PreRelease: featuregate.GA, LockToDefault: true},
 	},
 
 	UnauthenticatedHTTP2DOSMitigation: {
@@ -396,6 +408,7 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 
 	WatchList: {
 		{Version: version.MustParse("1.27"), Default: false, PreRelease: featuregate.Alpha},
+		{Version: version.MustParse("1.32"), Default: true, PreRelease: featuregate.Beta},
 	},
 
 	ZeroLimitedNominalConcurrencyShares: {
@@ -407,3 +420,12 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 // defaultKubernetesFeatureGates consists of legacy unversioned Kubernetes-specific feature keys.
 // Please do not add to this struct and use defaultVersionedKubernetesFeatureGates instead.
 var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{}
+
+// testOnlyVersionedKubernetesFeatureGates consists of features that require programmatic enablement
+// for integration testing, but have not yet graduated to alpha in a release and must not be enabled
+// by a runtime option.
+var testOnlyVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate.VersionedSpecs{
+	TestOnlyCBORServingAndStorage: {
+		{Version: version.MustParse("1.32"), Default: false, PreRelease: featuregate.Alpha},
+	},
+}

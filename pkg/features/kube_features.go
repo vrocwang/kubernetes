@@ -48,6 +48,13 @@ const (
 	// Allow spec.terminationGracePeriodSeconds to be overridden by MaxPodGracePeriodSeconds in soft evictions.
 	AllowOverwriteTerminationGracePeriodSeconds featuregate.Feature = "AllowOverwriteTerminationGracePeriodSeconds"
 
+	// owner: @thockin
+	// Deprecated: v1.29
+	//
+	// Enables Service.status.ingress.loadBanace to be set on
+	// services of types other than LoadBalancer.
+	AllowServiceLBStatusOnNonLB featuregate.Feature = "AllowServiceLBStatusOnNonLB"
+
 	// owner: @bswartz
 	//
 	// Enables usage of any object for volume data source in PVCs
@@ -140,6 +147,8 @@ const (
 	ContainerCheckpoint featuregate.Feature = "ContainerCheckpoint"
 
 	// owner: @helayoty
+	// kep: https://kep.k8s.io/4026
+	//
 	// Set the scheduled time as an annotation in the job.
 	CronJobsScheduledAnnotation featuregate.Feature = "CronJobsScheduledAnnotation"
 
@@ -195,12 +204,16 @@ const (
 	DisableNodeKubeProxyVersion featuregate.Feature = "DisableNodeKubeProxyVersion"
 
 	// owner: @pohly
-	// kep: http://kep.k8s.io/3063
+	// kep: http://kep.k8s.io/4381
 	//
-	// Enables support for resources with custom parameters and a lifecycle
-	// that is independent of a Pod. Resource allocation is done by a DRA driver's
-	// "control plane controller" in cooperation with the scheduler.
-	DRAControlPlaneController featuregate.Feature = "DRAControlPlaneController"
+	// Enables support for requesting admin access in a ResourceClaim.
+	// Admin access is granted even if a device is already in use and,
+	// depending on the DRA driver, may enable additional permissions
+	// when a container uses the allocated device.
+	//
+	// This feature gate is currently defined in KEP #4381. The intent
+	// is to move it into a separate KEP.
+	DRAAdminAccess featuregate.Feature = "DRAAdminAccess"
 
 	// owner: @pohly
 	// kep: http://kep.k8s.io/4381
@@ -264,6 +277,8 @@ const (
 
 	// owner: @mimowo
 	// kep: https://kep.k8s.io/4368
+	// alpha: v1.30
+	// beta: v1.32
 	//
 	// Allows to delegate reconciliation of a Job object to an external controller.
 	JobManagedBy featuregate.Feature = "JobManagedBy"
@@ -298,6 +313,13 @@ const (
 	// configuration option. If runtime doesn't support it, the kubelet will
 	// fallback to using it's cgroupDriver option.
 	KubeletCgroupDriverFromCRI featuregate.Feature = "KubeletCgroupDriverFromCRI"
+
+	// owner: @vinayakankugoyal
+	// kep: http://kep.k8s.io/2862
+	//
+	// Enable fine-grained kubelet API authorization for webhook based
+	// authorization.
+	KubeletFineGrainedAuthz featuregate.Feature = "KubeletFineGrainedAuthz"
 
 	// owner: @AkihiroSuda
 	//
@@ -455,6 +477,12 @@ const (
 	// Enables SleepAction in container lifecycle hooks
 	PodLifecycleSleepAction featuregate.Feature = "PodLifecycleSleepAction"
 
+	// owner: @sreeram-venkitesh
+	// kep: http://kep.k8s.io/4818
+	//
+	// Allows zero value for sleep duration in SleepAction in container lifecycle hooks
+	PodLifecycleSleepActionAllowZero featuregate.Feature = "PodLifecycleSleepActionAllowZero"
+
 	// owner: @Huang-Wei
 	// kep: https://kep.k8s.io/3521
 	//
@@ -592,6 +620,8 @@ const (
 	// owner: @derekwaynecarr
 	//
 	// Enables kubelet support to size memory backed volumes
+	// This is a kubelet only feature gate.
+	// Code can be removed in 1.35 without any consideration for emulated versions.
 	SizeMemoryBackedVolumes featuregate.Feature = "SizeMemoryBackedVolumes"
 
 	// owner: @mattcary
@@ -748,6 +778,16 @@ const (
 	//
 	// Enables the image volume source.
 	ImageVolume featuregate.Feature = "ImageVolume"
+
+	// owner: @zhifei92
+	// beta: v1.32
+	//
+	// Enables the systemd watchdog for the kubelet. When enabled, the kubelet will
+	// periodically notify the systemd watchdog to indicate that it is still alive.
+	// This can help prevent the system from restarting the kubelet if it becomes
+	// unresponsive. The feature gate is enabled by default, but should only be used
+	// if the system supports the systemd watchdog feature and has it configured properly.
+	SystemdWatchdog = featuregate.Feature("SystemdWatchdog")
 )
 
 func init() {

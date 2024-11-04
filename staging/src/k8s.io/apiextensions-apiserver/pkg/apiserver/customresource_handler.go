@@ -54,6 +54,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/runtime/serializer/cbor"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
 	"k8s.io/apimachinery/pkg/runtime/serializer/versioning"
@@ -69,8 +70,10 @@ import (
 	"k8s.io/apiserver/pkg/endpoints/handlers/responsewriters"
 	"k8s.io/apiserver/pkg/endpoints/metrics"
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
+	"k8s.io/apiserver/pkg/features"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericfilters "k8s.io/apiserver/pkg/server/filters"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/apiserver/pkg/util/webhook"
 	"k8s.io/apiserver/pkg/warning"
 	"k8s.io/client-go/scale"
@@ -322,7 +325,10 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	supportedTypes := []string{
 		string(types.JSONPatchType),
 		string(types.MergePatchType),
-		string(types.ApplyPatchType),
+		string(types.ApplyYAMLPatchType),
+	}
+	if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+		supportedTypes = append(supportedTypes, string(types.ApplyCBORPatchType))
 	}
 
 	var handlerFunc http.HandlerFunc
@@ -598,6 +604,20 @@ func (r *crdHandler) GetCustomResourceListerCollectionDeleter(crd *apiextensions
 		return nil, err
 	}
 	return info.storages[info.storageVersion].CustomResource, nil
+}
+
+func newCBORSerializerInfo(creater runtime.ObjectCreater, typer runtime.ObjectTyper) runtime.SerializerInfo {
+	return runtime.SerializerInfo{
+		MediaType:        "application/cbor",
+		MediaTypeType:    "application",
+		MediaTypeSubType: "cbor",
+		Serializer:       cbor.NewSerializer(creater, typer),
+		StrictSerializer: cbor.NewSerializer(creater, typer, cbor.Strict(true)),
+		StreamSerializer: &runtime.StreamSerializerInfo{
+			Framer:     cbor.NewFramer(),
+			Serializer: cbor.NewSerializer(creater, typer, cbor.Transcode(false)),
+		},
+	}
 }
 
 // getOrCreateServingInfoFor gets the CRD serving info for the given CRD UID if the key exists in the storage map.
@@ -892,6 +912,11 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 				},
 			},
 		}
+
+		if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+			negotiatedSerializer.supportedMediaTypes = append(negotiatedSerializer.supportedMediaTypes, newCBORSerializerInfo(creator, typer))
+		}
+
 		var standardSerializers []runtime.SerializerInfo
 		for _, s := range negotiatedSerializer.SupportedMediaTypes() {
 			if s.MediaType == runtime.ContentTypeProtobuf {
@@ -955,7 +980,11 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 		scaleScope := *requestScopes[v.Name]
 		scaleConverter := scale.NewScaleConverter()
 		scaleScope.Subresource = "scale"
-		scaleScope.Serializer = serializer.NewCodecFactory(scaleConverter.Scheme())
+		var opts []serializer.CodecFactoryOptionsMutator
+		if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+			opts = append(opts, serializer.WithSerializer(newCBORSerializerInfo))
+		}
+		scaleScope.Serializer = serializer.NewCodecFactory(scaleConverter.Scheme(), opts...)
 		scaleScope.Kind = autoscalingv1.SchemeGroupVersion.WithKind("Scale")
 		scaleScope.Namer = handlers.ContextBasedNaming{
 			Namer:         meta.NewAccessor(),
@@ -1043,7 +1072,7 @@ func scopeWithFieldManager(typeConverter managedfields.TypeConverter, reqScope h
 		reqScope.Kind,
 		reqScope.HubGroupVersion,
 		subresource,
-		resetFields,
+		fieldpath.NewExcludeFilterSetMap(resetFields),
 	)
 	if err != nil {
 		return handlers.RequestScope{}, err

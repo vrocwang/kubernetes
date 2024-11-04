@@ -193,8 +193,12 @@ func TestE2eNode(t *testing.T) {
 				klog.Exitf("chroot %q failed: %v", rootfs, err)
 			}
 		}
-		if _, err := system.ValidateSpec(*spec, "remote"); len(err) != 0 {
-			klog.Exitf("system validation failed: %v", err)
+		warns, errs := system.ValidateSpec(*spec, "remote")
+		if len(warns) != 0 {
+			klog.Warningf("system validation warns: %v", warns)
+		}
+		if len(errs) != 0 {
+			klog.Exitf("system validation failed: %v", errs)
 		}
 		return
 	}
@@ -236,7 +240,7 @@ var _ = ginkgo.SynchronizedBeforeSuite(func(ctx context.Context) []byte {
 	if framework.TestContext.PrepullImages {
 		klog.Infof("Pre-pulling images so that they are cached for the tests.")
 		updateImageAllowList(ctx)
-		err := PrePullAllImages()
+		err := PrePullAllImages(ctx)
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 	}
 

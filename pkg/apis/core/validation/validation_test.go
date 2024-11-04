@@ -7445,7 +7445,7 @@ func TestValidateProbe(t *testing.T) {
 	}
 
 	for _, p := range successCases {
-		if errs := validateProbe(p, defaultGracePeriod, field.NewPath("field")); len(errs) != 0 {
+		if errs := validateProbe(p, defaultGracePeriod, field.NewPath("field"), PodValidationOptions{}); len(errs) != 0 {
 			t.Errorf("expected success: %v", errs)
 		}
 	}
@@ -7457,7 +7457,7 @@ func TestValidateProbe(t *testing.T) {
 		errorCases = append(errorCases, probe)
 	}
 	for _, p := range errorCases {
-		if errs := validateProbe(p, defaultGracePeriod, field.NewPath("field")); len(errs) == 0 {
+		if errs := validateProbe(p, defaultGracePeriod, field.NewPath("field"), PodValidationOptions{}); len(errs) == 0 {
 			t.Errorf("expected failure for %v", p)
 		}
 	}
@@ -7563,7 +7563,7 @@ func Test_validateProbe(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := validateProbe(tt.args.probe, defaultGracePeriod, tt.args.fldPath)
+			got := validateProbe(tt.args.probe, defaultGracePeriod, tt.args.fldPath, PodValidationOptions{})
 			if len(got) != len(tt.want) {
 				t.Errorf("validateProbe() = %v, want %v", got, tt.want)
 				return
@@ -7588,7 +7588,7 @@ func TestValidateHandler(t *testing.T) {
 		{HTTPGet: &core.HTTPGetAction{Path: "/", Port: intstr.FromString("port"), Host: "", Scheme: "HTTP", HTTPHeaders: []core.HTTPHeader{{Name: "X-Forwarded-For", Value: "1.2.3.4"}, {Name: "X-Forwarded-For", Value: "5.6.7.8"}}}},
 	}
 	for _, h := range successCases {
-		if errs := validateHandler(handlerFromProbe(&h), defaultGracePeriod, field.NewPath("field")); len(errs) != 0 {
+		if errs := validateHandler(handlerFromProbe(&h), defaultGracePeriod, field.NewPath("field"), PodValidationOptions{}); len(errs) != 0 {
 			t.Errorf("expected success: %v", errs)
 		}
 	}
@@ -7603,7 +7603,7 @@ func TestValidateHandler(t *testing.T) {
 		{HTTPGet: &core.HTTPGetAction{Path: "/", Port: intstr.FromString("port"), Host: "", Scheme: "HTTP", HTTPHeaders: []core.HTTPHeader{{Name: "X_Forwarded_For", Value: "foo.example.com"}}}},
 	}
 	for _, h := range errorCases {
-		if errs := validateHandler(handlerFromProbe(&h), defaultGracePeriod, field.NewPath("field")); len(errs) == 0 {
+		if errs := validateHandler(handlerFromProbe(&h), defaultGracePeriod, field.NewPath("field"), PodValidationOptions{}); len(errs) == 0 {
 			t.Errorf("expected failure for %#v", h)
 		}
 	}
@@ -8323,7 +8323,8 @@ func TestValidateLinuxPodSecurityContext(t *testing.T) {
 
 func TestValidateContainers(t *testing.T) {
 	volumeDevices := make(map[string]core.VolumeSource)
-	capabilities.SetForTests(capabilities.Capabilities{
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{
 		AllowPrivileged: true,
 	})
 
@@ -8526,7 +8527,8 @@ func TestValidateContainers(t *testing.T) {
 		t.Errorf("expected success: %v", errs)
 	}
 
-	capabilities.SetForTests(capabilities.Capabilities{
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{
 		AllowPrivileged: false,
 	})
 	errorCases := []struct {
@@ -9151,7 +9153,8 @@ func TestValidateContainers(t *testing.T) {
 
 func TestValidateInitContainers(t *testing.T) {
 	volumeDevices := make(map[string]core.VolumeSource)
-	capabilities.SetForTests(capabilities.Capabilities{
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{
 		AllowPrivileged: true,
 	})
 
@@ -9229,7 +9232,8 @@ func TestValidateInitContainers(t *testing.T) {
 		t.Errorf("expected success: %v", errs)
 	}
 
-	capabilities.SetForTests(capabilities.Capabilities{
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{
 		AllowPrivileged: false,
 	})
 	errorCases := []struct {
@@ -14450,6 +14454,32 @@ func TestValidatePodStatusUpdate(t *testing.T) {
 		),
 		"",
 		"restartable init container can restart if RestartPolicyAlways",
+	}, {
+		*podtest.MakePod("foo",
+			podtest.SetStatus(core.PodStatus{
+				QOSClass: core.PodQOSBurstable,
+			}),
+		),
+		*podtest.MakePod("foo",
+			podtest.SetStatus(core.PodStatus{
+				QOSClass: core.PodQOSGuaranteed,
+			}),
+		),
+		"tatus.qosClass: Invalid value: \"Burstable\": field is immutable",
+		"qosClass can not be changed",
+	}, {
+		*podtest.MakePod("foo",
+			podtest.SetStatus(core.PodStatus{
+				QOSClass: core.PodQOSBurstable,
+			}),
+		),
+		*podtest.MakePod("foo",
+			podtest.SetStatus(core.PodStatus{
+				QOSClass: core.PodQOSBurstable,
+			}),
+		),
+		"",
+		"qosClass no change",
 	},
 	}
 
@@ -14508,7 +14538,8 @@ func TestValidatePodEphemeralContainersUpdate(t *testing.T) {
 
 	// Some tests use Windows host pods as an example of fields that might
 	// conflict between an ephemeral container and the rest of the pod.
-	capabilities.SetForTests(capabilities.Capabilities{
+	capabilities.ResetForTest()
+	capabilities.Initialize(capabilities.Capabilities{
 		AllowPrivileged: true,
 	})
 	makeWindowsHostPod := func(ephemeralContainers []core.EphemeralContainer) *core.Pod {
@@ -20996,7 +21027,8 @@ func TestValidateSecurityContext(t *testing.T) {
 		},
 	}
 	for k, v := range errorCases {
-		capabilities.SetForTests(capabilities.Capabilities{
+		capabilities.ResetForTest()
+		capabilities.Initialize(capabilities.Capabilities{
 			AllowPrivileged: v.capAllowPriv,
 		})
 		// note the unconditional `true` here for hostUsers. The failure case to test for ProcMount only includes it being true,
@@ -21984,15 +22016,15 @@ func TestCrossNamespaceSource(t *testing.T) {
 		expectedFail: true,
 		claimSpec:    pvcSpecWithCrossNamespaceSource(nil, "UnsupportedKind", &goodNS, goodName, false),
 	}, {
-		testName:     "Feature gate enabled and xns DataSourceRef with invalid namspace specified",
+		testName:     "Feature gate enabled and xns DataSourceRef with invalid namespace specified",
 		expectedFail: true,
 		claimSpec:    pvcSpecWithCrossNamespaceSource(&snapAPIGroup, snapKind, &badNS, goodName, false),
 	}, {
-		testName:     "Feature gate enabled and xns DataSourceRef with nil namspace specified",
+		testName:     "Feature gate enabled and xns DataSourceRef with nil namespace specified",
 		expectedFail: false,
 		claimSpec:    pvcSpecWithCrossNamespaceSource(&snapAPIGroup, snapKind, nil, goodName, false),
 	}, {
-		testName:     "Feature gate enabled and xns DataSourceRef with empty namspace specified",
+		testName:     "Feature gate enabled and xns DataSourceRef with empty namespace specified",
 		expectedFail: false,
 		claimSpec:    pvcSpecWithCrossNamespaceSource(&snapAPIGroup, snapKind, &emptyNS, goodName, false),
 	}, {
@@ -23649,8 +23681,8 @@ func TestValidateWindowsHostProcessPod(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-
-			capabilities.SetForTests(capabilities.Capabilities{
+			capabilities.ResetForTest()
+			capabilities.Initialize(capabilities.Capabilities{
 				AllowPrivileged: testCase.allowPrivileged,
 			})
 
@@ -24044,12 +24076,14 @@ func TestValidateLoadBalancerStatus(t *testing.T) {
 	testCases := []struct {
 		name          string
 		ipModeEnabled bool
+		nonLBAllowed  bool
 		tweakLBStatus func(s *core.LoadBalancerStatus)
 		tweakSvcSpec  func(s *core.ServiceSpec)
 		numErrs       int
 	}{
 		{
-			name: "type is not LB",
+			name:         "type is not LB",
+			nonLBAllowed: false,
 			tweakSvcSpec: func(s *core.ServiceSpec) {
 				s.Type = core.ServiceTypeClusterIP
 			},
@@ -24059,6 +24093,18 @@ func TestValidateLoadBalancerStatus(t *testing.T) {
 				}}
 			},
 			numErrs: 1,
+		}, {
+			name:         "type is not LB. back-compat",
+			nonLBAllowed: true,
+			tweakSvcSpec: func(s *core.ServiceSpec) {
+				s.Type = core.ServiceTypeClusterIP
+			},
+			tweakLBStatus: func(s *core.LoadBalancerStatus) {
+				s.Ingress = []core.LoadBalancerIngress{{
+					IP: "1.2.3.4",
+				}}
+			},
+			numErrs: 0,
 		}, {
 			name:          "valid vip ipMode",
 			ipModeEnabled: true,
@@ -24124,6 +24170,7 @@ func TestValidateLoadBalancerStatus(t *testing.T) {
 				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.31"))
 			}
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.LoadBalancerIPMode, tc.ipModeEnabled)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.AllowServiceLBStatusOnNonLB, tc.nonLBAllowed)
 			status := core.LoadBalancerStatus{}
 			tc.tweakLBStatus(&status)
 			spec := core.ServiceSpec{Type: core.ServiceTypeLoadBalancer}
@@ -24141,43 +24188,109 @@ func TestValidateLoadBalancerStatus(t *testing.T) {
 func TestValidateSleepAction(t *testing.T) {
 	fldPath := field.NewPath("root")
 	getInvalidStr := func(gracePeriod int64) string {
-		return fmt.Sprintf("must be greater than 0 and less than terminationGracePeriodSeconds (%d)", gracePeriod)
+		return fmt.Sprintf("must be greater than 0 and less than terminationGracePeriodSeconds (%d). Enable AllowPodLifecycleSleepActionZeroValue feature gate for zero sleep.", gracePeriod)
+	}
+
+	getInvalidStrWithZeroValueEnabled := func(gracePeriod int64) string {
+		return fmt.Sprintf("must be non-negative and less than terminationGracePeriodSeconds (%d)", gracePeriod)
 	}
 
 	testCases := []struct {
-		name        string
-		action      *core.SleepAction
-		gracePeriod int64
-		expectErr   field.ErrorList
+		name             string
+		action           *core.SleepAction
+		gracePeriod      int64
+		zeroValueEnabled bool
+		expectErr        field.ErrorList
 	}{
 		{
 			name: "valid setting",
 			action: &core.SleepAction{
 				Seconds: 5,
 			},
-			gracePeriod: 30,
+			gracePeriod:      30,
+			zeroValueEnabled: false,
 		},
 		{
 			name: "negative seconds",
 			action: &core.SleepAction{
 				Seconds: -1,
 			},
-			gracePeriod: 30,
-			expectErr:   field.ErrorList{field.Invalid(fldPath, -1, getInvalidStr(30))},
+			gracePeriod:      30,
+			zeroValueEnabled: false,
+			expectErr:        field.ErrorList{field.Invalid(fldPath, -1, getInvalidStr(30))},
 		},
 		{
 			name: "longer than gracePeriod",
 			action: &core.SleepAction{
 				Seconds: 5,
 			},
-			gracePeriod: 3,
-			expectErr:   field.ErrorList{field.Invalid(fldPath, 5, getInvalidStr(3))},
+			gracePeriod:      3,
+			zeroValueEnabled: false,
+			expectErr:        field.ErrorList{field.Invalid(fldPath, 5, getInvalidStr(3))},
+		},
+		{
+			name: "sleep duration of zero with zero value feature gate disabled",
+			action: &core.SleepAction{
+				Seconds: 0,
+			},
+			gracePeriod:      30,
+			zeroValueEnabled: false,
+			expectErr:        field.ErrorList{field.Invalid(fldPath, 0, getInvalidStr(30))},
+		},
+		{
+			name: "sleep duration of zero with zero value feature gate enabled",
+			action: &core.SleepAction{
+				Seconds: 0,
+			},
+			gracePeriod:      30,
+			zeroValueEnabled: true,
+		},
+		{
+			name: "invalid sleep duration (negative value) with zero value disabled",
+			action: &core.SleepAction{
+				Seconds: -1,
+			},
+			gracePeriod:      30,
+			zeroValueEnabled: false,
+			expectErr:        field.ErrorList{field.Invalid(fldPath, -1, getInvalidStr(30))},
+		},
+		{
+			name: "invalid sleep duration (negative value) with zero value enabled",
+			action: &core.SleepAction{
+				Seconds: -1,
+			},
+			gracePeriod:      30,
+			zeroValueEnabled: true,
+			expectErr:        field.ErrorList{field.Invalid(fldPath, -1, getInvalidStrWithZeroValueEnabled(30))},
+		},
+		{
+			name: "zero grace period duration with zero value enabled",
+			action: &core.SleepAction{
+				Seconds: 0,
+			},
+			gracePeriod:      0,
+			zeroValueEnabled: true,
+		},
+		{
+			name: "nil grace period with zero value disabled",
+			action: &core.SleepAction{
+				Seconds: 5,
+			},
+			zeroValueEnabled: false,
+			expectErr:        field.ErrorList{field.Invalid(fldPath, 5, getInvalidStr(0))},
+		},
+		{
+			name: "nil grace period with zero value enabled",
+			action: &core.SleepAction{
+				Seconds: 0,
+			},
+			zeroValueEnabled: true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := validateSleepAction(tc.action, &tc.gracePeriod, fldPath)
+			errs := validateSleepAction(tc.action, &tc.gracePeriod, fldPath, PodValidationOptions{AllowPodLifecycleSleepActionZeroValue: tc.zeroValueEnabled})
 
 			if len(tc.expectErr) > 0 && len(errs) == 0 {
 				t.Errorf("Unexpected success")
@@ -24766,7 +24879,109 @@ func TestValidateContainerStatusAllocatedResourcesStatus(t *testing.T) {
 				},
 			},
 			wantFieldErrors: field.ErrorList{
-				field.Invalid(fldPath.Index(0).Child("allocatedResourcesStatus").Index(1).Child("name"), core.ResourceName("test.device/test2"), "must match one of the container's resource requirements"),
+				field.Invalid(fldPath.Index(0).Child("allocatedResourcesStatus").Index(1).Child("name"), core.ResourceName("test.device/test2"), "must match one of the container's resource requests"),
+			},
+		},
+
+		"allow claims and request that are in spec": {
+			containers: []core.Container{
+				{
+					Name: "container-1",
+					Resources: core.ResourceRequirements{
+						Claims: []core.ResourceClaim{
+							{
+								Name:    "claim.name",
+								Request: "request.name",
+							},
+						},
+					},
+				},
+			},
+			containerStatuses: []core.ContainerStatus{
+				{
+					Name: "container-1",
+					AllocatedResourcesStatus: []core.ResourceStatus{
+						{
+							Name: "claim:claim.name/request.name",
+							Resources: []core.ResourceHealth{
+								{
+									ResourceID: "driver/pool/device-name",
+									Health:     core.ResourceHealthStatusHealthy,
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFieldErrors: field.ErrorList{},
+		},
+
+		"allow claims that are in spec without the request": {
+			containers: []core.Container{
+				{
+					Name: "container-1",
+					Resources: core.ResourceRequirements{
+						Claims: []core.ResourceClaim{
+							{
+								Name: "claim.name",
+							},
+						},
+					},
+				},
+			},
+			containerStatuses: []core.ContainerStatus{
+				{
+					Name: "container-1",
+					AllocatedResourcesStatus: []core.ResourceStatus{
+						{
+							Name: "claim:claim.name",
+							Resources: []core.ResourceHealth{
+								{
+									ResourceID: "driver/pool/device-name",
+									Health:     core.ResourceHealthStatusHealthy,
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFieldErrors: field.ErrorList{},
+		},
+
+		"don't allow claims that are not in spec": {
+			containers: []core.Container{
+				{
+					Name: "container-1",
+					Resources: core.ResourceRequirements{
+						Claims: []core.ResourceClaim{
+							{
+								Name: "other-claim.name",
+							},
+						},
+						Requests: core.ResourceList{
+							"claim.name": resource.MustParse("1"),
+						},
+					},
+				},
+			},
+			containerStatuses: []core.ContainerStatus{
+				{
+					Name: "container-1",
+					AllocatedResourcesStatus: []core.ResourceStatus{
+						{
+							Name: "claim:claim.name",
+							Resources: []core.ResourceHealth{
+								{
+									ResourceID: "driver/pool/device-name",
+									Health:     core.ResourceHealthStatusHealthy,
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFieldErrors: field.ErrorList{
+				field.Invalid(fldPath.Index(0).Child("allocatedResourcesStatus").Index(0).Child("name"), core.ResourceName("claim:claim.name"), "must match one of the container's resource claims in a format 'claim:<claimName>/<request>' or 'claim:<claimName>' if request is empty"),
 			},
 		},
 

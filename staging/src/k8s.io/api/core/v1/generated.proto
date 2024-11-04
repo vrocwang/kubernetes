@@ -181,7 +181,6 @@ message AzureFileVolumeSource {
 }
 
 // Binding ties one object to another; for example, a pod is bound to a node by a scheduler.
-// Deprecated in 1.7, please use the bindings subresource of pods instead.
 message Binding {
   // Standard object's metadata.
   // More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
@@ -2793,7 +2792,7 @@ message NodeStatus {
   optional string phase = 3;
 
   // Conditions is an array of current observed node conditions.
-  // More info: https://kubernetes.io/docs/concepts/nodes/node/#condition
+  // More info: https://kubernetes.io/docs/reference/node/node-status/#condition
   // +optional
   // +patchMergeKey=type
   // +patchStrategy=merge
@@ -2803,7 +2802,7 @@ message NodeStatus {
 
   // List of addresses reachable to the node.
   // Queried from cloud provider, if available.
-  // More info: https://kubernetes.io/docs/concepts/nodes/node/#addresses
+  // More info: https://kubernetes.io/docs/reference/node/node-status/#addresses
   // Note: This field is declared as mergeable, but the merge key is not sufficiently
   // unique, which can cause data corruption when it is merged. Callers should instead
   // use a full-replacement patch. See https://pr.k8s.io/79391 for an example.
@@ -2823,7 +2822,7 @@ message NodeStatus {
   optional NodeDaemonEndpoints daemonEndpoints = 6;
 
   // Set of ids/uuids to uniquely identify the node.
-  // More info: https://kubernetes.io/docs/concepts/nodes/node/#info
+  // More info: https://kubernetes.io/docs/reference/node/node-status/#info
   // +optional
   optional NodeSystemInfo nodeInfo = 7;
 
@@ -5046,7 +5045,7 @@ message ResourceFieldSelector {
 }
 
 // ResourceHealth represents the health of a resource. It has the latest device health information.
-// This is a part of KEP https://kep.k8s.io/4680 and historical health changes are planned to be added in future iterations of a KEP.
+// This is a part of KEP https://kep.k8s.io/4680.
 message ResourceHealth {
   // ResourceID is the unique identifier of the resource. See the ResourceID type for more information.
   optional string resourceID = 1;
@@ -5156,14 +5155,16 @@ message ResourceRequirements {
 }
 
 message ResourceStatus {
-  // Name of the resource. Must be unique within the pod and match one of the resources from the pod spec.
+  // Name of the resource. Must be unique within the pod and in case of non-DRA resource, match one of the resources from the pod spec.
+  // For DRA resources, the value must be "claim:<claim_name>/<request>".
+  // When this status is reported about a container, the "claim_name" and "request" must match one of the claims of this container.
   // +required
   optional string name = 1;
 
-  // List of unique Resources health. Each element in the list contains an unique resource ID and resource health.
-  // At a minimum, ResourceID must uniquely identify the Resource
-  // allocated to the Pod on the Node for the lifetime of a Pod.
-  // See ResourceID type for it's definition.
+  // List of unique resources health. Each element in the list contains an unique resource ID and its health.
+  // At a minimum, for the lifetime of a Pod, resource ID must uniquely identify the resource allocated to the Pod on the Node.
+  // If other Pod on the same Node reports the status with the same resource ID, it must be the same resource they share.
+  // See ResourceID type definition for a specific format it has in various use cases.
   // +listType=map
   // +listMapKey=resourceID
   repeated ResourceHealth resources = 2;
