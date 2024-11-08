@@ -377,8 +377,6 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 	// default pod validation options based on feature gate
 	opts := apivalidation.PodValidationOptions{
 		AllowInvalidPodDeletionCost: !utilfeature.DefaultFeatureGate.Enabled(features.PodDeletionCost),
-		// Allow pod spec to use status.hostIPs in downward API if feature is enabled
-		AllowHostIPsField: utilfeature.DefaultFeatureGate.Enabled(features.PodHostIPs),
 		// Do not allow pod spec to use non-integer multiple of huge page unit size default
 		AllowIndivisibleHugePagesValues:                   false,
 		AllowInvalidLabelValueInSelector:                  false,
@@ -393,10 +391,9 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 	opts.AllowRelaxedEnvironmentVariableValidation = useRelaxedEnvironmentVariableValidation(podSpec, oldPodSpec)
 	opts.AllowRelaxedDNSSearchValidation = useRelaxedDNSSearchValidation(oldPodSpec)
 
-	if oldPodSpec != nil {
-		// if old spec has status.hostIPs downwardAPI set, we must allow it
-		opts.AllowHostIPsField = opts.AllowHostIPsField || hasUsedDownwardAPIFieldPathWithPodSpec(oldPodSpec, "status.hostIPs")
+	opts.AllowOnlyRecursiveSELinuxChangePolicy = useOnlyRecursiveSELinuxChangePolicy(oldPodSpec)
 
+	if oldPodSpec != nil {
 		// if old spec used non-integer multiple of huge page unit size, we must allow it
 		opts.AllowIndivisibleHugePagesValues = usesIndivisibleHugePagesValues(oldPodSpec)
 
@@ -531,55 +528,6 @@ func relaxedEnvVarUsed(name string, oldPodEnvVarNames sets.Set[string]) bool {
 		return true
 	}
 
-	return false
-}
-
-func hasUsedDownwardAPIFieldPathWithPodSpec(podSpec *api.PodSpec, fieldPath string) bool {
-	if podSpec == nil {
-		return false
-	}
-	for _, vol := range podSpec.Volumes {
-		if hasUsedDownwardAPIFieldPathWithVolume(&vol, fieldPath) {
-			return true
-		}
-	}
-	for _, c := range podSpec.InitContainers {
-		if hasUsedDownwardAPIFieldPathWithContainer(&c, fieldPath) {
-			return true
-		}
-	}
-	for _, c := range podSpec.Containers {
-		if hasUsedDownwardAPIFieldPathWithContainer(&c, fieldPath) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasUsedDownwardAPIFieldPathWithVolume(volume *api.Volume, fieldPath string) bool {
-	if volume == nil || volume.DownwardAPI == nil {
-		return false
-	}
-	for _, file := range volume.DownwardAPI.Items {
-		if file.FieldRef != nil &&
-			file.FieldRef.FieldPath == fieldPath {
-			return true
-		}
-	}
-	return false
-}
-
-func hasUsedDownwardAPIFieldPathWithContainer(container *api.Container, fieldPath string) bool {
-	if container == nil {
-		return false
-	}
-	for _, env := range container.Env {
-		if env.ValueFrom != nil &&
-			env.ValueFrom.FieldRef != nil &&
-			env.ValueFrom.FieldRef.FieldPath == fieldPath {
-			return true
-		}
-	}
 	return false
 }
 
@@ -723,6 +671,7 @@ func dropDisabledFields(
 
 	dropPodLifecycleSleepAction(podSpec, oldPodSpec)
 	dropImageVolumes(podSpec, oldPodSpec)
+	dropSELinuxChangePolicy(podSpec, oldPodSpec)
 }
 
 func dropPodLifecycleSleepAction(podSpec, oldPodSpec *api.PodSpec) {
@@ -828,26 +777,32 @@ func dropDisabledPodStatusFields(podStatus, oldPodStatus *api.PodStatus, podSpec
 	}
 
 	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) && !inPlacePodVerticalScalingInUse(oldPodSpec) {
-		// Drop Resize, AllocatedResources, and Resources fields
-		dropResourcesFields := func(csl []api.ContainerStatus) {
+		// Drop Resize and Resources fields
+		dropResourcesField := func(csl []api.ContainerStatus) {
 			for i := range csl {
-				csl[i].AllocatedResources = nil
 				csl[i].Resources = nil
 			}
 		}
-		dropResourcesFields(podStatus.ContainerStatuses)
-		dropResourcesFields(podStatus.InitContainerStatuses)
-		dropResourcesFields(podStatus.EphemeralContainerStatuses)
+		dropResourcesField(podStatus.ContainerStatuses)
+		dropResourcesField(podStatus.InitContainerStatuses)
+		dropResourcesField(podStatus.EphemeralContainerStatuses)
 		podStatus.Resize = ""
+	}
+	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) ||
+		!utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingAllocatedStatus) {
+		// Drop AllocatedResources field
+		dropAllocatedResourcesField := func(csl []api.ContainerStatus) {
+			for i := range csl {
+				csl[i].AllocatedResources = nil
+			}
+		}
+		dropAllocatedResourcesField(podStatus.ContainerStatuses)
+		dropAllocatedResourcesField(podStatus.InitContainerStatuses)
+		dropAllocatedResourcesField(podStatus.EphemeralContainerStatuses)
 	}
 
 	if !utilfeature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation) && !dynamicResourceAllocationInUse(oldPodSpec) {
 		podStatus.ResourceClaimStatuses = nil
-	}
-
-	// drop HostIPs to empty (disable PodHostIPs).
-	if !utilfeature.DefaultFeatureGate.Enabled(features.PodHostIPs) && !hostIPsInUse(oldPodStatus) {
-		podStatus.HostIPs = nil
 	}
 
 	if !utilfeature.DefaultFeatureGate.Enabled(features.RecursiveReadOnlyMounts) && !rroInUse(oldPodSpec) {
@@ -884,13 +839,6 @@ func dropDisabledPodStatusFields(podStatus, oldPodStatus *api.PodStatus, podSpec
 		dropUserField(podStatus.ContainerStatuses)
 		dropUserField(podStatus.EphemeralContainerStatuses)
 	}
-}
-
-func hostIPsInUse(podStatus *api.PodStatus) bool {
-	if podStatus == nil {
-		return false
-	}
-	return len(podStatus.HostIPs) > 0
 }
 
 // dropDisabledDynamicResourceAllocationFields removes pod claim references from
@@ -1279,6 +1227,16 @@ func hasInvalidLabelValueInAffinitySelector(spec *api.PodSpec) bool {
 	return false
 }
 
+// IsRestartableInitContainer returns true if the container has ContainerRestartPolicyAlways.
+// This function is not checking if the container passed to it is indeed an init container.
+// It is just checking if the container restart policy has been set to always.
+func IsRestartableInitContainer(initContainer *api.Container) bool {
+	if initContainer == nil || initContainer.RestartPolicy == nil {
+		return false
+	}
+	return *initContainer.RestartPolicy == api.ContainerRestartPolicyAlways
+}
+
 func MarkPodProposedForResize(oldPod, newPod *api.Pod) {
 	if len(newPod.Spec.Containers) != len(oldPod.Spec.Containers) {
 		// Update is invalid: ignore changes and let validation handle it
@@ -1286,26 +1244,17 @@ func MarkPodProposedForResize(oldPod, newPod *api.Pod) {
 	}
 
 	for i, c := range newPod.Spec.Containers {
+		if c.Name != oldPod.Spec.Containers[i].Name {
+			return // Update is invalid (container mismatch): let validation handle it.
+		}
 		if c.Resources.Requests == nil {
 			continue
 		}
 		if cmp.Equal(oldPod.Spec.Containers[i].Resources, c.Resources) {
 			continue
 		}
-		findContainerStatus := func(css []api.ContainerStatus, cName string) (api.ContainerStatus, bool) {
-			for i := range css {
-				if css[i].Name == cName {
-					return css[i], true
-				}
-			}
-			return api.ContainerStatus{}, false
-		}
-		if cs, ok := findContainerStatus(newPod.Status.ContainerStatuses, c.Name); ok {
-			if !cmp.Equal(c.Resources.Requests, cs.AllocatedResources) {
-				newPod.Status.Resize = api.PodResizeStatusProposed
-				break
-			}
-		}
+		newPod.Status.Resize = api.PodResizeStatusProposed
+		return
 	}
 }
 
@@ -1360,4 +1309,35 @@ func imageVolumesInUse(podSpec *api.PodSpec) bool {
 	}
 
 	return false
+}
+
+func dropSELinuxChangePolicy(podSpec, oldPodSpec *api.PodSpec) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.SELinuxChangePolicy) || seLinuxChangePolicyInUse(oldPodSpec) {
+		return
+	}
+	if podSpec == nil || podSpec.SecurityContext == nil {
+		return
+	}
+	podSpec.SecurityContext.SELinuxChangePolicy = nil
+}
+
+func seLinuxChangePolicyInUse(podSpec *api.PodSpec) bool {
+	if podSpec == nil || podSpec.SecurityContext == nil {
+		return false
+	}
+	return podSpec.SecurityContext.SELinuxChangePolicy != nil
+}
+
+func useOnlyRecursiveSELinuxChangePolicy(oldPodSpec *api.PodSpec) bool {
+	if utilfeature.DefaultFeatureGate.Enabled(features.SELinuxMount) {
+		// All policies are allowed
+		return false
+	}
+
+	if seLinuxChangePolicyInUse(oldPodSpec) {
+		// The old pod spec has *any* policy: we need to keep that object update-able.
+		return false
+	}
+	// No feature gate + no value in the old object -> only Recursive is allowed
+	return true
 }

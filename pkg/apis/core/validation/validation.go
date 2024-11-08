@@ -31,6 +31,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
+	netutils "k8s.io/utils/net"
+
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -47,6 +49,7 @@ import (
 	utilsysctl "k8s.io/component-helpers/node/util/sysctl"
 	schedulinghelper "k8s.io/component-helpers/scheduling/corev1"
 	kubeletapis "k8s.io/kubelet/pkg/apis"
+
 	apiservice "k8s.io/kubernetes/pkg/api/service"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/helper"
@@ -57,7 +60,6 @@ import (
 	"k8s.io/kubernetes/pkg/cluster/ports"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/fieldpath"
-	netutils "k8s.io/utils/net"
 )
 
 const isNegativeErrorMsg string = apimachineryvalidation.IsNegativeErrorMsg
@@ -1073,7 +1075,6 @@ func validateDownwardAPIVolumeFile(file *core.DownwardAPIVolumeFile, fldPath *fi
 		if file.ResourceFieldRef != nil {
 			allErrs = append(allErrs, field.Invalid(fldPath, "resource", "fieldRef and resourceFieldRef can not be specified simultaneously"))
 		}
-		allErrs = append(allErrs, validateDownwardAPIHostIPs(file.FieldRef, fldPath.Child("fieldRef"), opts)...)
 	} else if file.ResourceFieldRef != nil {
 		localValidContainerResourceFieldPathPrefixes := validContainerResourceFieldPathPrefixesWithDownwardAPIHugePages
 		allErrs = append(allErrs, validateContainerResourceFieldSelector(file.ResourceFieldRef, &validContainerResourceFieldPathExpressions, &localValidContainerResourceFieldPathPrefixes, fldPath.Child("resourceFieldRef"), true)...)
@@ -1685,7 +1686,7 @@ func ValidateCSIDriverName(driverName string, fldPath *field.Path) field.ErrorLi
 	}
 
 	if len(driverName) > 63 {
-		allErrs = append(allErrs, field.TooLong(fldPath, driverName, 63))
+		allErrs = append(allErrs, field.TooLong(fldPath, "" /*unused*/, 63))
 	}
 
 	for _, msg := range validation.IsDNS1123Subdomain(strings.ToLower(driverName)) {
@@ -2655,7 +2656,6 @@ func validateEnvVarValueFrom(ev core.EnvVar, fldPath *field.Path, opts PodValida
 	if ev.ValueFrom.FieldRef != nil {
 		numSources++
 		allErrs = append(allErrs, validateObjectFieldSelector(ev.ValueFrom.FieldRef, &validEnvDownwardAPIFieldPathExpressions, fldPath.Child("fieldRef"))...)
-		allErrs = append(allErrs, validateDownwardAPIHostIPs(ev.ValueFrom.FieldRef, fldPath.Child("fieldRef"), opts)...)
 	}
 	if ev.ValueFrom.ResourceFieldRef != nil {
 		numSources++
@@ -2716,16 +2716,6 @@ func validateObjectFieldSelector(fs *core.ObjectFieldSelector, expressions *sets
 		return allErrs
 	}
 
-	return allErrs
-}
-
-func validateDownwardAPIHostIPs(fieldSel *core.ObjectFieldSelector, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
-	allErrs := field.ErrorList{}
-	if !opts.AllowHostIPsField {
-		if fieldSel.FieldPath == "status.hostIPs" {
-			allErrs = append(allErrs, field.Forbidden(fldPath, "may not be set when feature gate 'PodHostIPs' is not enabled"))
-		}
-	}
 	return allErrs
 }
 
@@ -4041,8 +4031,6 @@ type PodValidationOptions struct {
 	AllowInvalidLabelValueInSelector bool
 	// Allow pod spec to use non-integer multiple of huge page unit size
 	AllowIndivisibleHugePagesValues bool
-	// Allow pod spec to use status.hostIPs in downward API if feature is enabled
-	AllowHostIPsField bool
 	// Allow invalid topologySpreadConstraint labelSelector for backward compatibility
 	AllowInvalidTopologySpreadConstraintLabelSelector bool
 	// Allow projected token volumes with non-local paths
@@ -4058,6 +4046,8 @@ type PodValidationOptions struct {
 	AllowRelaxedDNSSearchValidation bool
 	// Allows zero value for Pod Lifecycle Sleep Action
 	AllowPodLifecycleSleepActionZeroValue bool
+	// Allow only Recursive value of SELinuxChangePolicy.
+	AllowOnlyRecursiveSELinuxChangePolicy bool
 }
 
 // validatePodMetadataAndSpec tests if required fields in the pod.metadata and pod.spec are set,
@@ -4355,6 +4345,9 @@ func validateWindows(spec *core.PodSpec, fldPath *field.Path) field.ErrorList {
 		}
 		if securityContext.SupplementalGroupsPolicy != nil {
 			allErrs = append(allErrs, field.Forbidden(fldPath.Child("securityContext").Child("supplementalGroupsPolicy"), "cannot be set for a windows pod"))
+		}
+		if securityContext.SELinuxChangePolicy != nil {
+			allErrs = append(allErrs, field.Forbidden(fldPath.Child("securityContext").Child("seLinuxChangePolicy"), "cannot be set for a windows pod"))
 		}
 	}
 	podshelper.VisitContainersWithPath(spec, fldPath, func(c *core.Container, cFldPath *field.Path) bool {
@@ -4767,7 +4760,7 @@ func ValidateAppArmorProfileField(profile *core.AppArmorProfile, fldPath *field.
 
 			const maxLocalhostProfileLength = 4095 // PATH_MAX - 1
 			if len(*profile.LocalhostProfile) > maxLocalhostProfileLength {
-				allErrs = append(allErrs, field.TooLongMaxLength(fldPath.Child("localhostProfile"), *profile.LocalhostProfile, maxLocalhostProfileLength))
+				allErrs = append(allErrs, field.TooLong(fldPath.Child("localhostProfile"), "" /*unused*/, maxLocalhostProfileLength))
 			}
 		}
 
@@ -4941,6 +4934,28 @@ func ValidateHostSysctl(sysctl string, securityContext *core.PodSecurityContext,
 	return nil
 }
 
+var validSELinuxChangePolicies = sets.New(core.SELinuxChangePolicyRecursive, core.SELinuxChangePolicyMountOption)
+
+func validateSELinuxChangePolicy(seLinuxChangePolicy *core.PodSELinuxChangePolicy, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+	if seLinuxChangePolicy == nil {
+		return nil
+	}
+
+	allErrs := field.ErrorList{}
+
+	if opts.AllowOnlyRecursiveSELinuxChangePolicy {
+		if *seLinuxChangePolicy != core.SELinuxChangePolicyRecursive {
+			allErrs = append(allErrs, field.NotSupported(fldPath, *seLinuxChangePolicy, []core.PodSELinuxChangePolicy{core.SELinuxChangePolicyRecursive}))
+		}
+	} else {
+		// Allow any valid SELinuxChangePolicy value.
+		if !validSELinuxChangePolicies.Has(*seLinuxChangePolicy) {
+			allErrs = append(allErrs, field.NotSupported(fldPath, *seLinuxChangePolicy, sets.List(validSELinuxChangePolicies)))
+		}
+	}
+	return allErrs
+}
+
 // validatePodSpecSecurityContext verifies the SecurityContext of a PodSpec,
 // whether that is defined in a Pod or in an embedded PodSpec (e.g. a
 // Deployment's pod template).
@@ -4986,6 +5001,10 @@ func validatePodSpecSecurityContext(securityContext *core.PodSecurityContext, sp
 
 		if securityContext.SupplementalGroupsPolicy != nil {
 			allErrs = append(allErrs, validateSupplementalGroupsPolicy(securityContext.SupplementalGroupsPolicy, fldPath.Child("supplementalGroupsPolicy"))...)
+		}
+
+		if securityContext.SELinuxChangePolicy != nil {
+			allErrs = append(allErrs, validateSELinuxChangePolicy(securityContext.SELinuxChangePolicy, fldPath.Child("seLinuxChangePolicy"), opts)...)
 		}
 	}
 
@@ -5104,16 +5123,6 @@ var updatablePodSpecFields = []string{
 	"`spec.activeDeadlineSeconds`",
 	"`spec.tolerations` (only additions to existing tolerations)",
 	"`spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)",
-	"`spec.containers[*].resources` (for CPU/memory only)",
-}
-
-// TODO(vinaykul,InPlacePodVerticalScaling): Drop this var once InPlacePodVerticalScaling goes GA and featuregate is gone.
-var updatablePodSpecFieldsNoResources = []string{
-	"`spec.containers[*].image`",
-	"`spec.initContainers[*].image`",
-	"`spec.activeDeadlineSeconds`",
-	"`spec.tolerations` (only additions to existing tolerations)",
-	"`spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)",
 }
 
 // ValidatePodUpdate tests to see if the update is legal for an end user to make. newPod is updated with fields
@@ -5175,45 +5184,12 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 		return allErrs
 	}
 
-	if qos.GetPodQOS(oldPod) != qos.ComputePodQOS(newPod) {
-		allErrs = append(allErrs, field.Invalid(fldPath, newPod.Status.QOSClass, "Pod QoS is immutable"))
-	}
-
 	// handle updateable fields by munging those fields prior to deep equal comparison.
 	mungedPodSpec := *newPod.Spec.DeepCopy()
 	// munge spec.containers[*].image
 	var newContainers []core.Container
 	for ix, container := range mungedPodSpec.Containers {
 		container.Image = oldPod.Spec.Containers[ix].Image // +k8s:verify-mutation:reason=clone
-		// When the feature-gate is turned off, any new requests attempting to update CPU or memory
-		// resource values will result in validation failure.
-		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
-			// Resources are mutable for CPU & memory only
-			//   - user can now modify Resources to express new desired Resources
-			mungeCpuMemResources := func(resourceList, oldResourceList core.ResourceList) core.ResourceList {
-				if oldResourceList == nil {
-					return nil
-				}
-				var mungedResourceList core.ResourceList
-				if resourceList == nil {
-					mungedResourceList = make(core.ResourceList)
-				} else {
-					mungedResourceList = resourceList.DeepCopy()
-				}
-				delete(mungedResourceList, core.ResourceCPU)
-				delete(mungedResourceList, core.ResourceMemory)
-				if cpu, found := oldResourceList[core.ResourceCPU]; found {
-					mungedResourceList[core.ResourceCPU] = cpu
-				}
-				if mem, found := oldResourceList[core.ResourceMemory]; found {
-					mungedResourceList[core.ResourceMemory] = mem
-				}
-				return mungedResourceList
-			}
-			lim := mungeCpuMemResources(container.Resources.Limits, oldPod.Spec.Containers[ix].Resources.Limits)
-			req := mungeCpuMemResources(container.Resources.Requests, oldPod.Spec.Containers[ix].Resources.Requests)
-			container.Resources = core.ResourceRequirements{Limits: lim, Requests: req}
-		}
 		newContainers = append(newContainers, container)
 	}
 	mungedPodSpec.Containers = newContainers
@@ -5290,10 +5266,7 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 		// This diff isn't perfect, but it's a helluva lot better an "I'm not going to tell you what the difference is".
 		// TODO: Pinpoint the specific field that causes the invalid error after we have strategic merge diff
 		specDiff := cmp.Diff(oldPod.Spec, mungedPodSpec)
-		errs := field.Forbidden(specPath, fmt.Sprintf("pod updates may not change fields other than %s\n%v", strings.Join(updatablePodSpecFieldsNoResources, ","), specDiff))
-		if utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
-			errs = field.Forbidden(specPath, fmt.Sprintf("pod updates may not change fields other than %s\n%v", strings.Join(updatablePodSpecFields, ","), specDiff))
-		}
+		errs := field.Forbidden(specPath, fmt.Sprintf("pod updates may not change fields other than %s\n%v", strings.Join(updatablePodSpecFields, ","), specDiff))
 		allErrs = append(allErrs, errs)
 	}
 	return allErrs
@@ -5385,6 +5358,10 @@ func ValidatePodStatusUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions
 	// Pod QoS is immutable
 	allErrs = append(allErrs, ValidateImmutableField(newPod.Status.QOSClass, oldPod.Status.QOSClass, fldPath.Child("qosClass"))...)
 
+	// Note: there is no check that ContainerStatuses, InitContainerStatuses, and EphemeralContainerStatuses doesn't have duplicate conatainer names
+	// or statuses of containers that are not defined in the pod spec. Changing this may lead to a breaking changes. So consumers of those fields
+	// must account for unexpected data. Kubelet will never report statuses like this.
+	//
 	// If pod should not restart, make sure the status update does not transition
 	// any terminated containers to a non-terminated state.
 	allErrs = append(allErrs, ValidateContainerStateTransition(newPod.Status.ContainerStatuses, oldPod.Status.ContainerStatuses, fldPath.Child("containerStatuses"), oldPod.Spec.RestartPolicy)...)
@@ -5498,6 +5475,93 @@ func ValidatePodEphemeralContainersUpdate(newPod, oldPod *core.Pod, opts PodVali
 	}
 
 	return allErrs
+}
+
+// ValidatePodResize tests that a user update to pod container resources is valid.
+// newPod and oldPod must only differ in their Containers[*].Resources and
+// Containers[*].ResizePolicy field.
+func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) field.ErrorList {
+	// Part 1: Validate newPod's spec and updates to metadata
+	fldPath := field.NewPath("metadata")
+	allErrs := ValidateImmutableField(&newPod.ObjectMeta, &oldPod.ObjectMeta, fldPath)
+	allErrs = append(allErrs, validatePodMetadataAndSpec(newPod, opts)...)
+
+	// static pods cannot be resized.
+	if _, ok := oldPod.Annotations[core.MirrorPodAnnotationKey]; ok {
+		return field.ErrorList{field.Forbidden(field.NewPath(""), "static pods cannot be resized")}
+	}
+
+	// windows pods are not supported.
+	if oldPod.Spec.OS != nil && oldPod.Spec.OS.Name == core.Windows {
+		return field.ErrorList{field.Forbidden(field.NewPath(""), "windows pods cannot be resized")}
+	}
+
+	// Part 2: Validate that the changes between oldPod.Spec.Containers[].Resources and
+	// newPod.Spec.Containers[].Resources are allowed.
+	specPath := field.NewPath("spec")
+	if qos.GetPodQOS(oldPod) != qos.ComputePodQOS(newPod) {
+		allErrs = append(allErrs, field.Invalid(specPath, newPod.Status.QOSClass, "Pod QOS Class may not change as a result of resizing"))
+	}
+
+	if !isPodResizeRequestSupported(*oldPod) {
+		allErrs = append(allErrs, field.Forbidden(specPath, "Pod running on node without support for resize"))
+	}
+
+	// Ensure that only CPU and memory resources are mutable.
+	originalCPUMemPodSpec := *newPod.Spec.DeepCopy()
+	var newContainers []core.Container
+	for ix, container := range originalCPUMemPodSpec.Containers {
+		dropCPUMemoryUpdates := func(resourceList, oldResourceList core.ResourceList) core.ResourceList {
+			if oldResourceList == nil {
+				return nil
+			}
+			var mungedResourceList core.ResourceList
+			if resourceList == nil {
+				mungedResourceList = make(core.ResourceList)
+			} else {
+				mungedResourceList = resourceList.DeepCopy()
+			}
+			delete(mungedResourceList, core.ResourceCPU)
+			delete(mungedResourceList, core.ResourceMemory)
+			if cpu, found := oldResourceList[core.ResourceCPU]; found {
+				mungedResourceList[core.ResourceCPU] = cpu
+			}
+			if mem, found := oldResourceList[core.ResourceMemory]; found {
+				mungedResourceList[core.ResourceMemory] = mem
+			}
+			return mungedResourceList
+		}
+		lim := dropCPUMemoryUpdates(container.Resources.Limits, oldPod.Spec.Containers[ix].Resources.Limits)
+		req := dropCPUMemoryUpdates(container.Resources.Requests, oldPod.Spec.Containers[ix].Resources.Requests)
+		container.Resources = core.ResourceRequirements{Limits: lim, Requests: req}
+		container.ResizePolicy = oldPod.Spec.Containers[ix].ResizePolicy // +k8s:verify-mutation:reason=clone
+		newContainers = append(newContainers, container)
+	}
+	originalCPUMemPodSpec.Containers = newContainers
+	if !apiequality.Semantic.DeepEqual(originalCPUMemPodSpec, oldPod.Spec) {
+		// This likely means that the user has made changes to resources other than CPU and Memory.
+		specDiff := cmp.Diff(oldPod.Spec, originalCPUMemPodSpec)
+		errs := field.Forbidden(specPath, fmt.Sprintf("only cpu and memory resources are mutable\n%v", specDiff))
+		allErrs = append(allErrs, errs)
+	}
+	return allErrs
+}
+
+// isPodResizeRequestSupported checks whether the pod is running on a node with InPlacePodVerticalScaling enabled.
+func isPodResizeRequestSupported(pod core.Pod) bool {
+	// TODO: Remove this after GA+3 releases of InPlacePodVerticalScaling
+	// This code handles the version skew as described in the KEP.
+	// For handling version skew we're only allowing to update the Pod's Resources
+	// if the Pod already has Pod.Status.ContainerStatuses[i].Resources. This means
+	// that the apiserver would only allow updates to Pods running on Nodes with
+	// the InPlacePodVerticalScaling feature gate enabled.
+	for _, c := range pod.Status.ContainerStatuses {
+		if c.State.Running != nil {
+			return c.Resources != nil
+		}
+	}
+	// No running containers. We cannot tell whether the node supports resize at this point, so we assume it does.
+	return true
 }
 
 // ValidatePodBinding tests if required fields in the pod binding are legal.
@@ -6558,7 +6622,7 @@ func ValidateSecret(secret *core.Secret) field.ErrorList {
 		totalSize += len(value)
 	}
 	if totalSize > core.MaxSecretSize {
-		allErrs = append(allErrs, field.TooLong(dataPath, "", core.MaxSecretSize))
+		allErrs = append(allErrs, field.TooLong(dataPath, "" /*unused*/, core.MaxSecretSize))
 	}
 
 	switch secret.Type {
@@ -6673,7 +6737,7 @@ func ValidateConfigMap(cfg *core.ConfigMap) field.ErrorList {
 	}
 	if totalSize > core.MaxSecretSize {
 		// pass back "" to indicate that the error refers to the whole object.
-		allErrs = append(allErrs, field.TooLong(field.NewPath(""), cfg, core.MaxSecretSize))
+		allErrs = append(allErrs, field.TooLong(field.NewPath(""), "" /*unused*/, core.MaxSecretSize))
 	}
 
 	return allErrs
@@ -7476,7 +7540,13 @@ func validateOS(podSpec *core.PodSpec, fldPath *field.Path, opts PodValidationOp
 	return allErrs
 }
 
-func ValidatePodLogOptions(opts *core.PodLogOptions) field.ErrorList {
+var validLogStreams = sets.New[string](
+	core.LogStreamStdout,
+	core.LogStreamStderr,
+	core.LogStreamAll,
+)
+
+func ValidatePodLogOptions(opts *core.PodLogOptions, allowStreamSelection bool) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if opts.TailLines != nil && *opts.TailLines < 0 {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("tailLines"), *opts.TailLines, isNegativeErrorMsg))
@@ -7491,6 +7561,20 @@ func ValidatePodLogOptions(opts *core.PodLogOptions) field.ErrorList {
 		if *opts.SinceSeconds < 1 {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("sinceSeconds"), *opts.SinceSeconds, "must be greater than 0"))
 		}
+	}
+	if allowStreamSelection {
+		if opts.Stream == nil {
+			allErrs = append(allErrs, field.Required(field.NewPath("stream"), "must be specified"))
+		} else {
+			if !validLogStreams.Has(*opts.Stream) {
+				allErrs = append(allErrs, field.NotSupported(field.NewPath("stream"), *opts.Stream, validLogStreams.UnsortedList()))
+			}
+			if *opts.Stream != core.LogStreamAll && opts.TailLines != nil {
+				allErrs = append(allErrs, field.Forbidden(field.NewPath(""), "`tailLines` and specific `stream` are mutually exclusive for now"))
+			}
+		}
+	} else if opts.Stream != nil {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("stream"), "may not be specified"))
 	}
 	return allErrs
 }

@@ -296,7 +296,7 @@ func (ce ClusterEvent) Label() string {
 
 // AllClusterEventLabels returns all possible cluster event labels given to the metrics.
 func AllClusterEventLabels() []string {
-	labels := []string{EventUnschedulableTimeout.Label()}
+	labels := []string{UnschedulableTimeout, ForceActivate}
 	for _, r := range allResources {
 		for _, a := range basicActionTypes {
 			labels = append(labels, ClusterEvent{Resource: r, ActionType: a}.Label())
@@ -1054,11 +1054,11 @@ func (n *NodeInfo) update(pod *v1.Pod, sign int64) {
 
 func calculateResource(pod *v1.Pod) (Resource, int64, int64) {
 	requests := resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{
-		InPlacePodVerticalScalingEnabled: utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling),
+		UseStatusResources: utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling),
 	})
 
 	non0Requests := resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{
-		InPlacePodVerticalScalingEnabled: utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling),
+		UseStatusResources: utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling),
 		NonMissingContainerRequests: map[v1.ResourceName]resource.Quantity{
 			v1.ResourceCPU:    *resource.NewMilliQuantity(schedutil.DefaultMilliCPURequest, resource.DecimalSI),
 			v1.ResourceMemory: *resource.NewQuantity(schedutil.DefaultMemoryRequest, resource.DecimalSI),
